@@ -1,0 +1,69 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "gac-connect"
+version = "0.1.0.dev0"
+description = "Unofficial async client for GAC / Aion international connected-car accounts"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = ["gac", "aion", "ev", "car", "home-assistant"]
+authors = [{ name = "GAC Connect contributors" }]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: AsyncIO",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Home Automation",
+]
+dependencies = [
+    "aiohttp>=3.9",
+    "cryptography>=44",
+]
+
+[project.optional-dependencies]
+cli = ["typer>=0.12", "rich>=13"]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.6", "mypy>=1.11"]
+
+[project.scripts]
+gac = "gac_connect.cli:app"
+
+[project.urls]
+Homepage = "https://github.com/OWNER/gac-connect"
+Issues = "https://github.com/OWNER/gac-connect/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/gac_connect"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/gac_connect/_material.pem" = "gac_connect/_material.pem"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "S"]
+# S101 asserts in tests; S311 request-id is not security-sensitive;
+# S105 flags the ERR_TOKEN_INVALID constant name (a code, not a secret).
+ignore = ["S101", "S311", "S105"]
+
+[tool.ruff.lint.per-file-ignores]
+# The CLI's tiny embedded HTTP handler / puzzle page uses compact lines.
+"src/gac_connect/cli.py" = ["E701", "E702", "E501"]
+# The command catalog reads better as aligned single-line entries.
+"src/gac_connect/commands.py" = ["E501"]
+# Tests set sys.path before importing and keep fixtures inline.
+"tests/*" = ["S105", "S106", "E402", "E501", "E701", "E702", "I001"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true

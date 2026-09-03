@@ -1,0 +1,20 @@
+# Local-only maintainer tooling (kept out of the published repo)
+scripts/build_material.py
+material.txt
+keys/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Local-only maintainer/dev scripts (reference the research tree or hit live API)
+tests/test_compat.py
+tests/live_smoke.py
+tests/close_windows.py
