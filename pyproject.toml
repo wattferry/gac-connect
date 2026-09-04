@@ -33,8 +33,8 @@ dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.6", "mypy>=1.11"]
 gac = "gac_connect.cli:app"
 
 [project.urls]
-Homepage = "https://github.com/OWNER/gac-connect"
-Issues = "https://github.com/OWNER/gac-connect/issues"
+Homepage = "https://github.com/wattferry/gac-connect"
+Issues = "https://github.com/wattferry/gac-connect/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/gac_connect"]
