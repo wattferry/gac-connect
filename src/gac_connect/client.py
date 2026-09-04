@@ -21,6 +21,7 @@ Design notes:
 """
 from __future__ import annotations
 
+import asyncio
 import random
 import time
 from typing import Any
@@ -38,6 +39,7 @@ from .const import (
     IOV_APP_ID,
     IOV_VERSION,
     MAIN_APP_ID,
+    MIN_REQUEST_GAP,
     REGIONS,
     SSO_SERVICE_ID,
     USER_AGENT,
@@ -45,6 +47,7 @@ from .const import (
 from .crypto import decrypt_envelope, encrypt_envelope, encrypt_sensitive
 from .errors import (
     AuthExpiredError,
+    RateLimitedError,
     CaptchaError,
     CommandError,
     LoginError,
@@ -84,6 +87,12 @@ class GacClient:
         self._m = material or load_material()
         self._session = Session(region=region)
         self._captcha: Captcha | None = None
+        # Hard request throttle: no two gateway calls closer than MIN_REQUEST_GAP,
+        # serialized, regardless of how the client is driven. Caps the absolute
+        # request rate so a misbehaving caller (a looping automation, a spammed
+        # button) can never hammer the gateway.
+        self._req_lock = asyncio.Lock()
+        self._last_request = 0.0
 
     # ---- lifecycle -------------------------------------------------------
     async def load(self) -> None:
@@ -99,11 +108,25 @@ class GacClient:
         return self._session
 
     # ---- low-level transport --------------------------------------------
+    async def _throttle(self) -> None:
+        async with self._req_lock:
+            gap = MIN_REQUEST_GAP - (time.monotonic() - self._last_request)
+            if gap > 0:
+                await asyncio.sleep(gap)
+            self._last_request = time.monotonic()
+
     async def _post(self, host: str, path: str, wrapper: dict, headers: dict) -> Any:
+        await self._throttle()
         url = f"https://{host}{path}"
         timeout = aiohttp.ClientTimeout(total=HTTP_TIMEOUT)
         async with self._http.post(url, data=_dumps(wrapper), headers=headers, timeout=timeout) as resp:
             raw = await resp.read()
+            if resp.status == 429:
+                retry = resp.headers.get("Retry-After")
+                raise RateLimitedError(
+                    "gateway rate-limited the request",
+                    retry_after=float(retry) if retry and retry.isdigit() else None,
+                )
         try:
             outer = _loads(raw)
         except ValueError as exc:

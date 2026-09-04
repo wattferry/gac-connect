@@ -43,6 +43,9 @@ PUZZLE_MAX_X: Final = PUZZLE_WIDTH - PUZZLE_PIECE_WIDTH  # slider travel, 0..263
 HTTP_TIMEOUT: Final = 20.0
 # The gateway refreshes vehicle status about every 30 s; polling faster is wasteful.
 MIN_POLL_INTERVAL: Final = 30.0
+# Hard floor between ANY two gateway requests, serialized in the client. Normal
+# polling is minutes apart so this never bites; it only caps bursts/misuse.
+MIN_REQUEST_GAP: Final = 1.0
 
 # Gateway result codes.
 CODE_OK: Final = "0000"
