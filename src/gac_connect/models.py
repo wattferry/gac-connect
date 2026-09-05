@@ -8,7 +8,7 @@ with the gateway's quirks resolved:
 * a charging current of 1638.0 is the gateway's "unknown" placeholder → None;
 * tyre pressure stays in native kPa (let the consumer convert to psi if it wants);
 * lock uses the gateway's inverted polarity (0 = locked), decoded to a bool;
-* openMode 0 = closed, >0 = open, -1 = not fitted;
+* openMode 0 = closed, >0 = open, negative = unknown;
 * the A/C is "on" when the compressor flag is set or the fan is running;
 * reservation times are milliseconds-of-day on the service's clock, exposed as "HH:MM".
 
@@ -99,6 +99,7 @@ class VehicleStatus:
     ac_on: bool | None = None
     ac_target_temp_c: float | None = None
     steering_heat_on: bool | None = None
+    lights_on: bool | None = None
     # the charge reservation as the service reports it (time of day on the
     # service's clock, which need not match the car's local time)
     charge_window_start: str | None = None
@@ -123,6 +124,7 @@ class VehicleStatus:
         pos = _first(results, "positionAccessors")
         air = _first(results, "airConditionAccessors")
         steer = _first(results, "steeringAccessors")
+        light = _first(results, "lightAccessors")
 
         soc = _num(drv.get("remainElectricityPercentage"))
         cur = _num(chg.get("chargingCurrent"))
@@ -145,7 +147,7 @@ class VehicleStatus:
             ))
 
         def any_open(key: str, sub: str) -> bool | None:
-            """None when the group is absent or every item reports "not fitted" (-1)."""
+            """None when the group is absent or no item reports a known state (negative = unknown)."""
             items = results.get(key)
             if not items:
                 return None
@@ -168,6 +170,9 @@ class VehicleStatus:
         steering = _num(steer.get("steering"))
         if steering is not None and steering < 0:
             steering = None
+        lights = _num(light.get("open"))
+        if lights is not None and lights < 0:
+            lights = None
         weekly = _num(chg.get("weeklyReservation"))
         if weekly is not None and not (weekly == weekly and abs(weekly) != float("inf") and weekly == int(weekly)):
             weekly = None   # only finite, whole-number bitmasks are meaningful
@@ -204,6 +209,7 @@ class VehicleStatus:
             ac_on=ac_on,
             ac_target_temp_c=_num(air.get("temperature")),
             steering_heat_on=(steering > 0) if steering is not None else None,
+            lights_on=(lights > 0) if lights is not None else None,
             charge_window_start=_hhmm(chg.get("dailyReservationStartTime")),
             charge_window_stop=_hhmm(chg.get("dailyReservationStopTime")),
             charge_weekly=int(weekly) if weekly is not None else None,

@@ -17,7 +17,7 @@ from .errors import (
     RegionError,
 )
 
-__version__ = "0.2.0b2"
+__version__ = "0.2.0b3"
 
 __all__ = [
     "AuthError",

@@ -107,7 +107,7 @@ def test_status_climate_and_window():
     assert s.ac_on is True and s.ac_target_temp_c == 21.5
     assert s.steering_heat_on is False
     assert (s.charge_window_start, s.charge_window_stop, s.charge_weekly) == ("23:00", "05:00", 0)
-    assert s.sunroof_open is None   # -1 = not fitted -> unknown, not "closed"
+    assert s.sunroof_open is None   # -1 = unknown, not "closed"
 
     off = VehicleStatus.from_results({"airConditionAccessors": [{"enableAirCompressor": 0, "windStrength": 0.0}]})
     assert off.ac_on is False
@@ -167,3 +167,10 @@ def test_climate_minutes_whole():
     assert VehicleStatus.from_results({"chargingAccessors": [{"weeklyReservation": float("nan")}]}).charge_weekly is None
     assert VehicleStatus.from_results({"chargingAccessors": [{"weeklyReservation": 2.5}]}).charge_weekly is None
     assert VehicleStatus.from_results({"chargingAccessors": [{"weeklyReservation": 3}]}).charge_weekly == 3
+
+
+def test_lights_state():
+    from gac_connect.models import VehicleStatus
+    L = lambda v: VehicleStatus.from_results({"lightAccessors": [{"open": v, "light": 1}]}).lights_on  # noqa: E731
+    assert L(1) is True and L(0) is False and L(-1) is None and L("x") is None
+    assert VehicleStatus.from_results({}).lights_on is None
