@@ -169,6 +169,13 @@ def test_climate_minutes_whole():
     assert VehicleStatus.from_results({"chargingAccessors": [{"weeklyReservation": 3}]}).charge_weekly == 3
 
 
+def test_horn_commands():
+    from gac_connect.commands import CATALOG, build_body
+    for name, tail in (("horn-on", "/horn/on"), ("horn-off", "/horn/off")):
+        assert CATALOG[name].path.endswith(tail) and not CATALOG[name].pin
+        assert build_body(CATALOG[name], "VIN1") == {"vin": "VIN1"}
+
+
 def test_lights_state():
     from gac_connect.models import VehicleStatus
     L = lambda v: VehicleStatus.from_results({"lightAccessors": [{"open": v, "light": 1}]}).lights_on  # noqa: E731

@@ -64,6 +64,8 @@ CATALOG: dict[str, Command] = {c.name: c for c in [
     Command("tailgate-close", _p("hatchback/close"), "flat", category="body", description="tailgate close"),
     Command("flash-on", _p("flash/on"), "flat", category="body", description="flash lights on"),
     Command("flash-off", _p("flash/off"), "flat", category="body", description="flash lights off"),
+    Command("horn-on", _p("horn/on"), "flat", category="body", description="sound horn"),
+    Command("horn-off", _p("horn/off"), "flat", category="body", description="horn off"),
     # charging & power
     Command("charge-schedule", _p("charging/reservation"), "ops", stable=True, category="charge", description="set charge schedule"),
     Command("charger-unlock", _p("charger/unlock"), "flat", pin=True, category="charge",
