@@ -92,6 +92,19 @@ pause only for sustained periods.
 
 A Home Assistant integration built on this library is available separately.
 
+## Acknowledgements
+
+This project stands on the shoulders of the community projects that brought other
+EV brands into Home Assistant and Python, among them:
+
+- [AwangYes/BYD-re](https://github.com/AwangYes/BYD-re) — BYD
+- [Hyundai-Kia-Connect/kia_uvo](https://github.com/Hyundai-Kia-Connect/kia_uvo) — Hyundai / Kia
+- [bimmerconnected/bimmer_connected](https://github.com/bimmerconnected/bimmer_connected) — BMW / Mini
+- [SAIC-iSmart-API/saic-python-client-ng](https://github.com/SAIC-iSmart-API/saic-python-client-ng) — MG / SAIC
+- [kvanbiesen/bmw-cardata-ha](https://github.com/kvanbiesen/bmw-cardata-ha) — BMW CarData
+
+Thanks to their authors for showing what a good community integration looks like.
+
 ## License
 
 MIT.
