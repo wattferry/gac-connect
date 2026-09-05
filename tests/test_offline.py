@@ -226,3 +226,15 @@ def test_push_helpers():
     assert interpret(b'{"code": 0, "data": {"updateTime": 1.5e3}}').update_time_ms == 1500
     assert interpret(b'{"code": 0, "data": {"updateTime": NaN}}').update_time_ms is None
     assert "password" not in repr(BrokerInfo.from_data({"host": "b", "password": "secret", "topics": ["t"]}))
+
+
+def test_charge_power_and_time():
+    from gac_connect.models import VehicleStatus
+    s = VehicleStatus.from_results({"chargingAccessors": [{"chargingCurrent": 8.8, "chargingVoltage": 240.0,
+                                                           "estimatedChargedDuration": 44460000}]})
+    assert s.charge_voltage_v == 240.0 and s.charge_power_kw == 2.11 and s.estimated_charge_minutes is None
+    s = VehicleStatus.from_results({"chargingAccessors": [{"chargingCurrent": 0.0, "chargingVoltage": 0.0,
+                                                           "estimatedChargedDuration": 95}]})
+    assert s.charge_power_kw is None and s.charge_voltage_v is None and s.estimated_charge_minutes == 95
+    s = VehicleStatus.from_results({"chargingAccessors": [{"chargingCurrent": 0.0, "chargingVoltage": 240.0}]})
+    assert s.charge_power_kw == 0.0 and s.charge_voltage_v == 240.0

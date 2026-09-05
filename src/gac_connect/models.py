@@ -34,6 +34,9 @@ class ChargingMode(IntEnum):
     UNKNOWN = -1
 
 
+_MAX_CHARGE_MINUTES = 7 * 24 * 60   # maximum accepted charge duration
+
+
 def _num(v: Any) -> float | None:
     try:
         f = float(v)
@@ -77,6 +80,8 @@ class VehicleStatus:
     charging: bool | None = None
     charging_mode: ChargingMode | None = None
     charge_current_a: float | None = None
+    charge_voltage_v: float | None = None
+    charge_power_kw: float | None = None
     estimated_charge_minutes: int | None = None
     plugged_in: bool | None = None
     charger_locked: bool | None = None
@@ -131,6 +136,12 @@ class VehicleStatus:
         if cur == cls._CURRENT_UNKNOWN:
             cur = None
         est = _num(chg.get("estimatedChargedDuration"))
+        if est is not None and not 0 <= est < _MAX_CHARGE_MINUTES:
+            est = None   # discard an out-of-range duration
+        volt = _num(chg.get("chargingVoltage")) if chg.get("chargingVoltageFlag", 1) else None
+        if volt is not None and volt <= 0:
+            volt = None
+        power = round(volt * cur / 1000, 2) if volt is not None and cur is not None and cur >= 0 else None
 
         doors = results.get("doorAccessors") or []
         locked = None
@@ -191,6 +202,8 @@ class VehicleStatus:
             charging=(raw_status == ChargingStatus.CHARGING) if raw_status is not None else None,
             charging_mode=mode,
             charge_current_a=cur,
+            charge_voltage_v=volt,
+            charge_power_kw=power,
             estimated_charge_minutes=int(est) if est is not None else None,
             plugged_in=(cgr.get("plug") == 1) if cgr.get("plug") is not None else None,
             charger_locked=(cgr.get("lock") == cls._LOCK_LOCKED) if cgr.get("lock") is not None else None,
