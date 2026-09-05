@@ -298,6 +298,21 @@ class GacClient:
             resp = await self._iov_call(path, body, sensitive=sensitive)
         return resp
 
+    # ---- push channel ----------------------------------------------------
+    async def mqtt_info(self) -> dict:
+        """Broker details for the command-result feed (short-lived password)."""
+        if not self._session.access_valid and self._session.refresh_valid:
+            await self._refresh()
+        resp = await self._iov_read("/mqtt/info", {})
+        data = self._data(resp)
+        if not isinstance(data, dict) or not data.get("host"):
+            raise CommandError(f"push channel details unavailable: {_msg(resp)}")
+        return data
+
+    def decrypt_push(self, envelope: dict) -> Any:
+        """Open a message from the push feed (same envelope as gateway responses)."""
+        return decrypt_envelope(envelope, self._m.iov.private)
+
     # ---- commands --------------------------------------------------------
     async def command(self, vin: str, name: str, **overrides: Any) -> Any:
         cmd = commands.CATALOG.get(name)
@@ -346,6 +361,18 @@ class GacClient:
         resp = await self._iov_call(vehicle._RESERVATION, vehicle.reservation_body(vin, operation),
                                     sensitive={"vin": vin})
         return _command_result(resp)
+
+
+def command_session_id(resp: Any) -> str | None:
+    """The session id the service assigns to an accepted command, if it gives one."""
+    from .push import normalize_id  # same normalisation as push results, so ids correlate
+
+    data = resp.get("data") if isinstance(resp, dict) else None
+    if not isinstance(data, dict):
+        return None
+    ident = data.get("identifier")
+    sid = data.get("sessionId") or (ident.get("sessionId") if isinstance(ident, dict) else None)
+    return normalize_id(sid)
 
 
 def _command_result(resp: Any) -> Any:

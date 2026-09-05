@@ -72,6 +72,27 @@ State of charge, range, odometer, charging state and mode, plugged-in, cabin
 temperature, 12 V battery, GPS, doors / windows / boot / lock state, and per-tyre
 pressure (in kPa) and temperature.
 
+## Command results
+
+Commands are accepted asynchronously and their results are delivered by the
+service over a separate channel. `PushClient` keeps that channel open and hands
+each result (outcome, command event, session id) to your handler:
+
+```python
+from gac_connect import PushClient
+
+def on_result(topic, payload, result):
+    print(result.event, result.ok, result.session_id)
+
+# The service's broker may be plain TCP; its credentials are short-lived, but
+# you must opt in to sending them unencrypted.
+push = PushClient(client.mqtt_info, on_result, decrypt=client.decrypt_push, allow_plaintext=True)
+task = asyncio.create_task(push.run())   # reconnects on its own until stop()
+...
+push.stop()
+await task
+```
+
 ## Charging control
 
 `charge_now`, `charge_pause`, and `set_charge_window` gate charging through the

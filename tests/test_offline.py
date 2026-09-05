@@ -181,3 +181,48 @@ def test_lights_state():
     L = lambda v: VehicleStatus.from_results({"lightAccessors": [{"open": v, "light": 1}]}).lights_on  # noqa: E731
     assert L(1) is True and L(0) is False and L(-1) is None and L("x") is None
     assert VehicleStatus.from_results({}).lights_on is None
+
+
+def test_push_helpers():
+    import pytest
+    from gac_connect.push import BrokerInfo, interpret
+    b = BrokerInfo.from_data({"host": "tcp://broker.example", "port": 2883, "clientId": "c", "username": "u",
+                              "password": "p", "topics": ["/ControlResult/1"]})
+    assert (b.host, b.port, b.topics, b.tls) == ("broker.example", 2883, ("/ControlResult/1",), False)
+    assert BrokerInfo.from_data({"host": "ssl://b", "topics": ["t"]}).tls is True
+    assert BrokerInfo.from_data({"host": "tcp://b", "port": 8883, "topics": ["t"]}).tls is False   # scheme wins
+    assert BrokerInfo.from_data({"host": "b", "port": 8883, "topics": ["t"]}).tls is True            # no scheme: port
+    assert BrokerInfo.from_data({"host": "b:2883", "topics": ["t"]}).port == 2883
+    with pytest.raises(ValueError):
+        BrokerInfo.from_data({"host": "ws://b", "topics": ["t"]})
+    assert interpret(b'{"success": "false"}').ok is None
+    assert interpret(b'{"success": "0"}').ok is None
+    assert interpret(b'{"code": "0", "msg": "ok\\u0007\\n"}').message == "ok"
+    assert len(interpret(b'{"code": 1, "msg": "' + b"x" * 500 + b'"}').message) == 120
+    assert interpret(b"not json").ok is None
+    assert interpret(b'{"success": true, "data": {"x": 1}}').ok is True
+    assert interpret(b'{"code": "0", "msg": "SUCCESS"}').ok is True
+    r = interpret(b'{"code": 13102, "msg": "refused"}')
+    assert r.ok is False and r.code == "13102" and r.message == "refused"
+    assert interpret(b'[1, 2]').ok is None
+    r = interpret(b'{"code": 0, "msg": "success", "data": {"updateTime": 1788612254015, "identifier": {"vin": "V", "event": "control_steering", "sessionId": "s1"}, "results": []}}')
+    assert r.ok is True and r.event == "control_steering" and r.session_id == "s1" and r.update_time_ms == 1788612254015
+    assert r.vin == "V"
+    from gac_connect import command_session_id
+    assert command_session_id({"code": 13001, "data": {"sessionId": "abc"}}) == "abc"
+    assert command_session_id({"code": 13001, "data": {"identifier": {"sessionId": "x"}}}) == "x"
+    assert command_session_id({"code": 13001}) is None and command_session_id("nope") is None
+    assert command_session_id({"data": {"identifier": "bad"}}) is None
+    assert command_session_id({"data": {"identifier": {"sessionId": 7}}}) == "7"
+    assert command_session_id({"data": {"sessionId": True}}) is None
+    assert command_session_id({"data": {"sessionId": " s\\u0007 "}}) == "s"
+    assert len(command_session_id({"data": {"sessionId": "x" * 200}})) == 64
+    assert interpret(b'{"code": 13001, "msg": "ongoing"}').ok is None      # interim / unknown
+    assert interpret(b'{"code": 13101}').ok is False
+    assert interpret(b'{"code": "weird"}').ok is None
+    r = interpret(b'{"code": 0, "data": {"identifier": {"sessionId": 42, "event": ["x"], "vin": "V\\u0007"}}}')
+    assert (r.session_id, r.event, r.vin) == ("42", None, "V")
+    assert interpret(b'{"code": true}').code is None
+    assert interpret(b'{"code": 0, "data": {"updateTime": 1.5e3}}').update_time_ms == 1500
+    assert interpret(b'{"code": 0, "data": {"updateTime": NaN}}').update_time_ms is None
+    assert "password" not in repr(BrokerInfo.from_data({"host": "b", "password": "secret", "topics": ["t"]}))
