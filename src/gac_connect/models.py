@@ -8,7 +8,9 @@ with the gateway's quirks resolved:
 * a charging current of 1638.0 is the gateway's "unknown" placeholder → None;
 * tyre pressure stays in native kPa (let the consumer convert to psi if it wants);
 * lock uses the gateway's inverted polarity (0 = locked), decoded to a bool;
-* openMode 0 = closed, >0 = open, -1 = not fitted.
+* openMode 0 = closed, >0 = open, -1 = not fitted;
+* the A/C is "on" when the compressor flag is set or the fan is running;
+* reservation times are milliseconds-of-day on the service's clock, exposed as "HH:MM".
 
 The raw ``results`` dict is retained on ``.raw`` so anything not modelled here is
 still reachable.
@@ -49,6 +51,15 @@ def _is_open(v: Any) -> bool:
     return (_num(v) or 0) > 0
 
 
+def _hhmm(ms: Any) -> str | None:
+    """Milliseconds-of-day -> "HH:MM"; None outside 0 <= ms < 24 h."""
+    v = _num(ms)
+    if v is None or not 0 <= v < 86_400_000:
+        return None
+    minutes = int(v) // 60000
+    return f"{minutes // 60:02d}:{minutes % 60:02d}"
+
+
 @dataclass
 class Tyre:
     position: str
@@ -84,6 +95,15 @@ class VehicleStatus:
     hatch_open: bool | None = None
     sunroof_open: bool | None = None
     tyres: list[Tyre] = field(default_factory=list)
+    # climate
+    ac_on: bool | None = None
+    ac_target_temp_c: float | None = None
+    steering_heat_on: bool | None = None
+    # the charge reservation as the service reports it (time of day on the
+    # service's clock, which need not match the car's local time)
+    charge_window_start: str | None = None
+    charge_window_stop: str | None = None
+    charge_weekly: int | None = None
     raw: dict = field(default_factory=dict)
 
     # gateway "unknown" placeholder for charge current
@@ -101,6 +121,8 @@ class VehicleStatus:
         env = _first(results, "environmentAccessors")
         bat = _first(results, "batteryAccessors")
         pos = _first(results, "positionAccessors")
+        air = _first(results, "airConditionAccessors")
+        steer = _first(results, "steeringAccessors")
 
         soc = _num(drv.get("remainElectricityPercentage"))
         cur = _num(chg.get("chargingCurrent"))
@@ -123,10 +145,32 @@ class VehicleStatus:
             ))
 
         def any_open(key: str, sub: str) -> bool | None:
+            """None when the group is absent or every item reports "not fitted" (-1)."""
             items = results.get(key)
             if not items:
                 return None
-            return any(_is_open(i.get(sub)) for i in items)
+            modes = [_num(i.get(sub)) for i in items]
+            if all(m is None or m < 0 for m in modes):
+                return None
+            return any(m is not None and m > 0 for m in modes)
+
+        # Negative values are "unknown / not fitted" sentinels. A/C is on when the
+        # compressor or the fan reports on; off only when both explicitly report off.
+        compressor = _num(air.get("enableAirCompressor"))
+        fan = _num(air.get("windStrength"))
+        known = [v for v in (compressor, fan) if v is not None and v >= 0]
+        if not known:
+            ac_on = None
+        elif compressor == 1 or (fan is not None and fan > 0):
+            ac_on = True
+        else:
+            ac_on = False if len(known) == 2 else None
+        steering = _num(steer.get("steering"))
+        if steering is not None and steering < 0:
+            steering = None
+        weekly = _num(chg.get("weeklyReservation"))
+        if weekly is not None and not (weekly == weekly and abs(weekly) != float("inf") and weekly == int(weekly)):
+            weekly = None   # only finite, whole-number bitmasks are meaningful
 
         raw_status = _num(chg.get("chargingStatus"))
         try:
@@ -157,6 +201,12 @@ class VehicleStatus:
             hatch_open=any_open("hatchAccessors", "openMode"),
             sunroof_open=any_open("sunroofAccessors", "openMode"),
             tyres=tyres,
+            ac_on=ac_on,
+            ac_target_temp_c=_num(air.get("temperature")),
+            steering_heat_on=(steering > 0) if steering is not None else None,
+            charge_window_start=_hhmm(chg.get("dailyReservationStartTime")),
+            charge_window_stop=_hhmm(chg.get("dailyReservationStopTime")),
+            charge_weekly=int(weekly) if weekly is not None else None,
             raw=results,
         )
 

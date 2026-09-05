@@ -2,13 +2,11 @@
 
 The gateway has no plain "start" / "stop"; charging is gated through the schedule:
 
-* **charge now** — mode 0 (free): charge whenever plugged in. After a pause the
-  car takes roughly 10 minutes to actually resume (a charging-ECU wake cycle);
-  the command returns immediately but charging restarts slowly. Only pause for
-  sustained expensive periods.
-* **pause** — mode 1 (scheduled) with a window that excludes the present, so
-  charging stops within about 11 seconds. Scheduled mode needs both the
-  ms-of-day fields and the absolute start/stop structs.
+* **charge now** — mode 0 (free): charge whenever plugged in. The command
+  returns immediately; the car applies it asynchronously and resuming can take
+  several minutes, so pause only for sustained periods.
+* **pause** — mode 1 (scheduled) with a window that excludes the present.
+  Scheduled mode needs both the ms-of-day fields and the absolute start/stop structs.
 * **set window** — mode 1 with a real daily window.
 
 Times are car-local. ``weekly`` is a day bitmask (Mon=1, Tue=2, … Sun=64; 0 = every day).

@@ -7,19 +7,19 @@ from typing import Final
 # two separate crypto profiles.
 IOV_PREFIX: Final = "/iov-vehicle-gateway/v1/platform/vehicle/access_gateway"
 
-# region -> (main API host, IoV gateway host). AU/NZ are verified working; the
-# others are marked experimental until someone confirms one live.
+# region -> (main API host, IoV gateway host). AU/NZ are the supported regions;
+# the others are best-effort.
 REGIONS: Final[dict[str, dict[str, str]]] = {
     "AU": {"main": "nl-app-api.gac-international.com", "iov": "eu-iov-sdk-access.gac-international.com",
-           "tel": "+61", "tz": "Australia/Brisbane", "verified": True},
+           "tel": "+61", "tz": "Australia/Brisbane", "supported": True},
     "NZ": {"main": "nl-app-api.gac-international.com", "iov": "eu-iov-sdk-access.gac-international.com",
-           "tel": "+64", "tz": "Pacific/Auckland", "verified": True},
+           "tel": "+64", "tz": "Pacific/Auckland", "supported": True},
     "GB": {"main": "nl-app-api.gac-international.com", "iov": "eu-iov-sdk-access.gac-international.com",
-           "tel": "+44", "tz": "Europe/London", "verified": False},
+           "tel": "+44", "tz": "Europe/London", "supported": False},
     "SG": {"main": "sg-app-api.gac-international.com", "iov": "eu-iov-sdk-access.gac-international.com",
-           "tel": "+65", "tz": "Asia/Singapore", "verified": False},
+           "tel": "+65", "tz": "Asia/Singapore", "supported": False},
     "AE": {"main": "sa-app-api.gac-international.com", "iov": "eu-iov-sdk-access.gac-international.com",
-           "tel": "+971", "tz": "Asia/Dubai", "verified": False},
+           "tel": "+971", "tz": "Asia/Dubai", "supported": False},
 }
 DEFAULT_REGION: Final = "AU"
 

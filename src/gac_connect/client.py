@@ -47,11 +47,11 @@ from .const import (
 from .crypto import decrypt_envelope, encrypt_envelope, encrypt_sensitive
 from .errors import (
     AuthExpiredError,
-    RateLimitedError,
     CaptchaError,
     CommandError,
     LoginError,
     PinRequiredError,
+    RateLimitedError,
     RegionError,
     TokenInvalidError,
 )
@@ -312,6 +312,21 @@ class GacClient:
         # Commands are NOT auto-retried on an invalid token (could double-actuate);
         # surface it so the caller decides.
         return _command_result(resp)
+
+    async def climate_on(self, vin: str, *, temperature: float = 24.0, minutes: int = 30) -> Any:
+        """Run the cabin A/C in auto mode at ``temperature`` °C for ``minutes``.
+
+        Raises ``ValueError`` for a non-finite or out-of-range temperature (16–30 °C,
+        rounded to 0.5) or duration (5–60 minutes) before anything is sent.
+        """
+        t, m = commands.validate_climate(temperature, minutes)
+        return await self.command(vin, "aircon-on", temperature=t, currentDuration=m)
+
+    async def climate_off(self, vin: str) -> Any:
+        return await self.command(vin, "aircon-off")
+
+    async def lock(self, vin: str) -> Any:
+        return await self.command(vin, "lock")
 
     async def charge_now(self, vin: str, *, until_soc: bool = False) -> Any:
         return await self._reservation(vin, vehicle.charge_now_operation(until_soc=until_soc))

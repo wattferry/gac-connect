@@ -92,3 +92,78 @@ def test_captcha_proofs():
     assert c.point_json(100) == c.point_json(100)
     assert c.ticket(100) != c.point_json(100)
     assert len(c.ticket(100)) > 0
+
+
+def test_status_climate_and_window():
+    from gac_connect.models import VehicleStatus
+    results = {
+        "airConditionAccessors": [{"enableAirCompressor": 1, "windStrength": 3.0, "temperature": 21.5}],
+        "steeringAccessors": [{"steering": 0}],
+        "chargingAccessors": [{"dailyReservationStartTime": 82800000, "dailyReservationStopTime": 18000000,
+                               "weeklyReservation": 0, "chargingMode": 1, "chargingStatus": 0}],
+        "sunroofAccessors": [{"openMode": -1}],
+    }
+    s = VehicleStatus.from_results(results)
+    assert s.ac_on is True and s.ac_target_temp_c == 21.5
+    assert s.steering_heat_on is False
+    assert (s.charge_window_start, s.charge_window_stop, s.charge_weekly) == ("23:00", "05:00", 0)
+    assert s.sunroof_open is None   # -1 = not fitted -> unknown, not "closed"
+
+    off = VehicleStatus.from_results({"airConditionAccessors": [{"enableAirCompressor": 0, "windStrength": 0.0}]})
+    assert off.ac_on is False
+    assert VehicleStatus.from_results({}).ac_on is None
+
+
+def test_fitted_and_time_edges():
+    from gac_connect.models import VehicleStatus, _hhmm
+    s = VehicleStatus.from_results({
+        "hatchAccessors": [{"openMode": -1, "hatch": 1}, {"openMode": 0, "hatch": 2}],
+        "windowAccessors": [{"openMode": "2"}],
+    })
+    assert s.hatch_open is False        # one fitted + closed item -> closed
+    assert s.window_open is True        # numeric strings decode
+    assert VehicleStatus.from_results({"hatchAccessors": [{"openMode": "x"}]}).hatch_open is None
+    assert _hhmm(0) == "00:00" and _hhmm(86_399_000) == "23:59"
+    assert _hhmm(86_400_000) is None and _hhmm(-1) is None and _hhmm("abc") is None
+
+
+def test_climate_validation():
+    import pytest
+    from gac_connect.commands import validate_climate
+    assert validate_climate(21.3, 30) == (21.5, 30)
+    assert validate_climate("24", "5") == (24.0, 5)
+    for bad in ((float("nan"), 30), (float("inf"), 30), (15.9, 30), (30.1, 30), ("hot", 30),
+                (22, 4), (22, 61), (22, -1), (22, "x"), (None, 30)):
+        with pytest.raises(ValueError):
+            validate_climate(*bad)
+
+
+def test_climate_sentinels():
+    from gac_connect.models import VehicleStatus
+    def R(air=None, steer=None):
+        groups = {"airConditionAccessors": [air] if air else None, "steeringAccessors": [steer] if steer else None}
+        return VehicleStatus.from_results({k: v for k, v in groups.items() if v})
+    assert R({"enableAirCompressor": 0, "windStrength": 0.0}).ac_on is False
+    assert R({"enableAirCompressor": 1, "windStrength": 0.0}).ac_on is True
+    assert R({"enableAirCompressor": -1, "windStrength": 2.0}).ac_on is True
+    assert R({"enableAirCompressor": 0}).ac_on is None            # partial off -> unknown
+    assert R({"enableAirCompressor": -1, "windStrength": -1}).ac_on is None
+    assert R(steer={"steering": -1}).steering_heat_on is None
+    assert R(steer={"steering": 0}).steering_heat_on is False
+    assert R(steer={"steering": 1}).steering_heat_on is True
+
+
+def test_climate_minutes_whole():
+    import pytest
+    from gac_connect.commands import validate_climate
+    assert validate_climate(22, 30.0) == (22.0, 30)
+    for bad in (5.9, "5.5", float("nan"), float("inf"), -float("inf"), 10**400):
+        with pytest.raises(ValueError):
+            validate_climate(22, bad)
+    for bad_t in (float("inf"), 10**400):
+        with pytest.raises(ValueError):
+            validate_climate(bad_t, 30)
+    from gac_connect.models import VehicleStatus
+    assert VehicleStatus.from_results({"chargingAccessors": [{"weeklyReservation": float("nan")}]}).charge_weekly is None
+    assert VehicleStatus.from_results({"chargingAccessors": [{"weeklyReservation": 2.5}]}).charge_weekly is None
+    assert VehicleStatus.from_results({"chargingAccessors": [{"weeklyReservation": 3}]}).charge_weekly == 3

@@ -1,13 +1,22 @@
 # GAC Connect
 
+> **⚠️ BETA — not fully tested, use entirely at your own risk.** This is an
+> unofficial client with no relationship to GAC. Expect bugs; things that
+> worked yesterday may not work tomorrow. Remote commands physically act on your
+> vehicle (A/C, locks, windows, tailgate, charging) and may misbehave or fail;
+> using it alongside the official app may sign one of them out. Nothing here is
+> warranted to work, keep working, or be safe. Review what an automation can do
+> before you let it touch the car.
+
 An unofficial async Python client for **GAC / Aion international** connected-car
 accounts — read your vehicle's status and control charging from your own code.
 
-> Not affiliated with, endorsed by, or supported by GAC. Use it with a vehicle
-> you own, on your own account. Names and trademarks belong to their owners.
+> This project is not affiliated with, endorsed by, or supported by GAC or its
+> affiliates. GAC and AION are third-party trademarks of their respective
+> owners. Use it with a vehicle you own, on your own account.
 
-Works today for **Australia and New Zealand**. Other regions are listed but
-unverified — reports welcome.
+Supports **Australia and New Zealand**. Other regions are listed as best-effort —
+reports welcome.
 
 ## Install
 
@@ -66,14 +75,16 @@ pressure (in kPa) and temperature.
 ## Charging control
 
 `charge_now`, `charge_pause`, and `set_charge_window` gate charging through the
-car's schedule. Pausing stops charging within seconds; resuming takes the car a
-few minutes to act on — so pause only for sustained periods.
+car's schedule. The car applies commands asynchronously: pausing usually takes
+effect quickly, resuming can take several minutes and may be delayed or fail — so
+pause only for sustained periods.
 
 ## Notes and limits
 
 - Sign-in needs a human: a slide puzzle and an SMS code. There is no headless login.
-- Remote lock/unlock, engine, and charger-release need a remote-control PIN that
-  this client does not yet support; those commands are refused.
+- Locking is available; unlock, remote power and charger-release need a
+  remote-control PIN that this client does not yet support, so those commands
+  are refused.
 - Using the official app and this client on the same account at the same time can
   occasionally sign one of them out.
 
