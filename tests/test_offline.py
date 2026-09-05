@@ -215,7 +215,7 @@ def test_push_helpers():
     assert command_session_id({"data": {"identifier": "bad"}}) is None
     assert command_session_id({"data": {"identifier": {"sessionId": 7}}}) == "7"
     assert command_session_id({"data": {"sessionId": True}}) is None
-    assert command_session_id({"data": {"sessionId": " s\\u0007 "}}) == "s"
+    assert command_session_id({"data": {"sessionId": " s\u0007 "}}) == "s"
     assert len(command_session_id({"data": {"sessionId": "x" * 200}})) == 64
     assert interpret(b'{"code": 13001, "msg": "ongoing"}').ok is None      # interim / unknown
     assert interpret(b'{"code": 13101}').ok is False

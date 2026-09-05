@@ -144,7 +144,9 @@ def interpret(payload: bytes) -> PushResult:
     upd = data.get("updateTime") if isinstance(data, dict) else None
     return PushResult(
         ok, normalize_id(code), msg, data,
-        event=normalize_id(ident.get("event")), session_id=normalize_id(ident.get("sessionId")), vin=normalize_id(ident.get("vin")),
+        event=normalize_id(ident.get("event")),
+        session_id=normalize_id(ident.get("sessionId")),
+        vin=normalize_id(ident.get("vin")),
         update_time_ms=_millis(upd),
     )
 
