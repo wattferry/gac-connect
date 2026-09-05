@@ -132,7 +132,7 @@ def test_climate_validation():
     from gac_connect.commands import validate_climate
     assert validate_climate(21.3, 30) == (21.5, 30)
     assert validate_climate("24", "5") == (24.0, 5)
-    for bad in ((float("nan"), 30), (float("inf"), 30), (15.9, 30), (30.1, 30), ("hot", 30),
+    for bad in ((float("nan"), 30), (float("inf"), 30), (17.9, 30), (32.1, 30), ("hot", 30),
                 (22, 4), (22, 61), (22, -1), (22, "x"), (None, 30)):
         with pytest.raises(ValueError):
             validate_climate(*bad)

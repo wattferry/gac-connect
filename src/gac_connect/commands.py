@@ -76,7 +76,7 @@ CATALOG: dict[str, Command] = {c.name: c for c in [
 ]}
 
 
-CLIMATE_TEMP_RANGE = (16.0, 30.0)   # °C
+CLIMATE_TEMP_RANGE = (18.0, 32.0)   # °C
 CLIMATE_MINUTES_RANGE = (5, 60)
 
 

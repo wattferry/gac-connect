@@ -316,7 +316,7 @@ class GacClient:
     async def climate_on(self, vin: str, *, temperature: float = 24.0, minutes: int = 30) -> Any:
         """Run the cabin A/C in auto mode at ``temperature`` °C for ``minutes``.
 
-        Raises ``ValueError`` for a non-finite or out-of-range temperature (16–30 °C,
+        Raises ``ValueError`` for a non-finite or out-of-range temperature (18–32 °C,
         rounded to 0.5) or duration (5–60 minutes) before anything is sent.
         """
         t, m = commands.validate_climate(temperature, minutes)
