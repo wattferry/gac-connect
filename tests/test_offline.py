@@ -238,3 +238,124 @@ def test_charge_power_and_time():
     assert s.charge_power_kw is None and s.charge_voltage_v is None and s.estimated_charge_minutes == 95
     s = VehicleStatus.from_results({"chargingAccessors": [{"chargingCurrent": 0.0, "chargingVoltage": 240.0}]})
     assert s.charge_power_kw == 0.0 and s.charge_voltage_v == 240.0
+
+
+# ---- fridge -----------------------------------------------------------------
+
+def test_validate_fridge_defaults_and_ranges():
+    from gac_connect.commands import validate_fridge
+    assert validate_fridge("refrigerate") == (1, 3.0)
+    assert validate_fridge("heat") == (2, 42.0)
+    assert validate_fridge("freeze") == (4, -12.0)
+    assert validate_fridge("refrigerate", 0) == (1, 0.0)
+    assert validate_fridge("refrigerate", 20) == (1, 20.0)
+    assert validate_fridge("heat", 35) == (2, 35.0)
+    assert validate_fridge("freeze", -1) == (4, -1.0)
+    assert validate_fridge("freeze", -15) == (4, -15.0)
+    assert validate_fridge("refrigerate", 3.4) == (1, 3.0)   # whole degrees
+
+
+def test_validate_fridge_rejects_bad_input():
+    import pytest
+    from gac_connect.commands import validate_fridge
+    for mode, temp in [("off", None), ("cool", None), ("refrigerate", 21), ("refrigerate", -1),
+                       ("heat", 34), ("heat", 51), ("freeze", 0), ("freeze", -16),
+                       ("refrigerate", float("nan")), ("refrigerate", "warm")]:
+        with pytest.raises(ValueError):
+            validate_fridge(mode, temp)
+
+
+def test_fridge_command_bodies():
+    from gac_connect import commands
+    on = commands.build_body(commands.CATALOG["fridge-on"], "VIN1",
+                             {"workingMode": 4, "refrigeratorTemperature": -12.0})
+    assert on == {"identifier": {"vin": "VIN1"},
+                  "operations": [{"refrigeratorOperationType": "on", "workingMode": 4, "refrigeratorTemperature": -12.0}]}
+    assert commands.build_body(commands.CATALOG["fridge-off"], "VIN1", {}) == {"vin": "VIN1"}
+
+
+def test_status_parses_fridge():
+    from gac_connect.models import VehicleStatus
+    running = VehicleStatus.from_results({"refrigeratorAccessors": [
+        {"leavingVehicleStatus": 0, "workingMode": 4, "surplusTime": 0.0, "refrigeratorTemperature": -12.0}]})
+    assert running.fridge_fitted and running.fridge_mode == "freeze" and running.fridge_temp_c == -12.0
+    off = VehicleStatus.from_results({"refrigeratorAccessors": [
+        {"leavingVehicleStatus": 0, "workingMode": 3, "surplusTime": 0.0}]})
+    assert off.fridge_fitted and off.fridge_mode == "off" and off.fridge_temp_c is None
+    none = VehicleStatus.from_results({})
+    assert not none.fridge_fitted and none.fridge_mode is None
+    odd = VehicleStatus.from_results({"refrigeratorAccessors": [{"workingMode": 9}]})
+    assert odd.fridge_fitted and odd.fridge_mode is None   # unknown code is not guessed
+
+
+def test_validate_fridge_strict_inputs():
+    import pytest
+    from gac_connect.commands import validate_fridge
+    for mode, temp in [("refrigerate", True), ("refrigerate", False), ([], None), (None, None), (1, None),
+                       ("refrigerate", 20.4), ("freeze", -0.6), ("heat", 34.6), ("freeze", -15.4),
+                       ("refrigerate", float("inf"))]:
+        with pytest.raises(ValueError):
+            validate_fridge(mode, temp)
+    assert validate_fridge("refrigerate", 19.6) == (1, 20.0)   # in range, then rounded
+    assert validate_fridge("freeze", -1.4) == (4, -1.0)
+
+
+def test_fridge_on_invalid_input_never_sends():
+    import asyncio
+    import pytest
+    from gac_connect.client import GacClient
+    sent = []
+    client = GacClient.__new__(GacClient)
+    async def fake_command(vin, name, **kw):
+        sent.append((name, kw))
+    client.command = fake_command
+    for kwargs in ({"mode": "off"}, {"mode": "heat", "temperature": 60}, {"mode": "refrigerate", "temperature": True}):
+        with pytest.raises(ValueError):
+            asyncio.run(client.fridge_on("VIN", **kwargs))
+    assert sent == []
+    asyncio.run(client.fridge_on("VIN", mode="heat", temperature=45))
+    assert sent == [("fridge-on", {"workingMode": 2, "refrigeratorTemperature": 45.0})]
+
+
+def test_status_fridge_rejects_bad_values():
+    from gac_connect.models import VehicleStatus
+    for code in (float("nan"), float("inf"), 1.9, True, "x", None):
+        s = VehicleStatus.from_results({"refrigeratorAccessors": [{"workingMode": code, "refrigeratorTemperature": 3}]})
+        assert s.fridge_mode is None, code
+    for temp in (float("nan"), float("inf"), True, "cold"):
+        s = VehicleStatus.from_results({"refrigeratorAccessors": [{"workingMode": 1, "refrigeratorTemperature": temp}]})
+        assert s.fridge_temp_c is None, temp
+    assert VehicleStatus.from_results({"refrigeratorAccessors": [{"workingMode": 1.0, "refrigeratorTemperature": "4"}]}).fridge_mode == "refrigerate"
+
+
+def test_fridge_boundaries_and_rounding():
+    import pytest
+    from gac_connect.commands import validate_fridge
+    for mode, temp in [("refrigerate", -0.4), ("heat", 50.4)]:
+        with pytest.raises(ValueError):
+            validate_fridge(mode, temp)
+    assert validate_fridge("refrigerate", 2.5) == (1, 2.0)     # halves round to even
+    assert validate_fridge("refrigerate", 3.5) == (1, 4.0)
+    assert validate_fridge("heat", 35) == (2, 35.0) and validate_fridge("heat", 50) == (2, 50.0)
+    assert validate_fridge("freeze", -15) == (4, -15.0) and validate_fridge("freeze", -1) == (4, -1.0)
+
+
+def test_fridge_on_unhashable_mode_never_sends():
+    import asyncio
+    import pytest
+    from gac_connect.client import GacClient
+    sent = []
+    client = GacClient.__new__(GacClient)
+    async def fake_command(vin, name, **kw):
+        sent.append(name)
+    client.command = fake_command
+    for mode in ([], {}, None):
+        with pytest.raises(ValueError):
+            asyncio.run(client.fridge_on("VIN", mode=mode))
+    assert sent == []
+
+
+def test_status_fridge_huge_numbers():
+    from gac_connect.models import VehicleStatus
+    s = VehicleStatus.from_results({"refrigeratorAccessors": [{"workingMode": 10**400, "refrigeratorTemperature": 10**400}]})
+    assert s.fridge_mode is None and s.fridge_temp_c is None

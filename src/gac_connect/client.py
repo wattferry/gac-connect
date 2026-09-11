@@ -340,6 +340,22 @@ class GacClient:
     async def climate_off(self, vin: str) -> Any:
         return await self.command(vin, "aircon-off")
 
+    async def fridge_on(self, vin: str, *, mode: str = "refrigerate", temperature: float | None = None) -> Any:
+        """Ask the car to run the fridge in ``mode`` ("refrigerate", "heat" or "freeze") at ``temperature`` °C.
+
+        Without a temperature this library's default for the mode is sent
+        (refrigerate 3, heat 42, freeze -12 °C), so omitting it while the fridge
+        runs resets the target. Raises ``ValueError`` for an unknown mode or an
+        out-of-range temperature before anything is sent. Sending this while the
+        fridge runs changes its mode or temperature. An accepted request is not
+        proof the car applied it; read the status to confirm.
+        """
+        code, t = commands.validate_fridge(mode, temperature)
+        return await self.command(vin, "fridge-on", workingMode=code, refrigeratorTemperature=t)
+
+    async def fridge_off(self, vin: str) -> Any:
+        return await self.command(vin, "fridge-off")
+
     async def lock(self, vin: str) -> Any:
         return await self.command(vin, "lock")
 

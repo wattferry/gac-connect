@@ -17,6 +17,7 @@ still reachable.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Any
@@ -40,9 +41,23 @@ _MAX_CHARGE_MINUTES = 7 * 24 * 60   # maximum accepted charge duration
 def _num(v: Any) -> float | None:
     try:
         f = float(v)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     return f
+
+
+def _finite(v: Any) -> float | None:
+    """A real, finite number, or None (booleans and NaN/inf are not readings)."""
+    if isinstance(v, bool):
+        return None
+    f = _num(v)
+    return f if f is not None and math.isfinite(f) else None
+
+
+def _exact_int(v: Any) -> int | None:
+    """An enum code: an integral, finite, non-boolean number, else None."""
+    f = _finite(v)
+    return int(f) if f is not None and f.is_integer() else None
 
 
 def _first(res: dict, key: str) -> dict:
@@ -105,6 +120,10 @@ class VehicleStatus:
     ac_target_temp_c: float | None = None
     steering_heat_on: bool | None = None
     lights_on: bool | None = None
+    # fridge / warmer box: None when the car does not report one
+    fridge_fitted: bool = False
+    fridge_mode: str | None = None           # "off" | "refrigerate" | "heat" | "freeze"
+    fridge_temp_c: float | None = None       # target, reported only while running
     # the charge reservation as the service reports it (time of day on the
     # service's clock, which need not match the car's local time)
     charge_window_start: str | None = None
@@ -116,6 +135,8 @@ class VehicleStatus:
     _CURRENT_UNKNOWN = 1638.0
     # doorAccessors[].lock: 0 = locked, 1 = unlocked, <0 = unknown
     _LOCK_LOCKED = 0
+    # refrigeratorAccessors[].workingMode
+    _FRIDGE_MODE = {1: "refrigerate", 2: "heat", 3: "off", 4: "freeze"}
     # tyre report order (positions unverified; documented as such)
     _TYRE_POS = {1: "front left", 2: "front right", 3: "rear left", 4: "rear right"}
 
@@ -130,6 +151,7 @@ class VehicleStatus:
         air = _first(results, "airConditionAccessors")
         steer = _first(results, "steeringAccessors")
         light = _first(results, "lightAccessors")
+        fridge = _first(results, "refrigeratorAccessors")
 
         soc = _num(drv.get("remainElectricityPercentage"))
         cur = _num(chg.get("chargingCurrent"))
@@ -223,6 +245,9 @@ class VehicleStatus:
             ac_target_temp_c=_num(air.get("temperature")),
             steering_heat_on=(steering > 0) if steering is not None else None,
             lights_on=(lights > 0) if lights is not None else None,
+            fridge_fitted=bool(results.get("refrigeratorAccessors")),
+            fridge_mode=cls._FRIDGE_MODE.get(_exact_int(fridge.get("workingMode"))),
+            fridge_temp_c=_finite(fridge.get("refrigeratorTemperature")),
             charge_window_start=_hhmm(chg.get("dailyReservationStartTime")),
             charge_window_stop=_hhmm(chg.get("dailyReservationStopTime")),
             charge_weekly=int(weekly) if weekly is not None else None,

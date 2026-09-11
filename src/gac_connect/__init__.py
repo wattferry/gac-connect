@@ -19,7 +19,7 @@ from .errors import (
 )
 from .push import BrokerInfo, PushClient, PushResult, interpret
 
-__version__ = "0.2.0b6"
+__version__ = "0.2.0b7"
 
 __all__ = [
     "AuthError",

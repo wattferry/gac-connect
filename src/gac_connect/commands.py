@@ -53,6 +53,10 @@ CATALOG: dict[str, Command] = {c.name: c for c in [
     Command("ventilate-off", _p("ventilate_mode/close"), "flat", category="climate", description="cabin ventilation off"),
     Command("steering-on", _p("steering/on"), "flat", stable=True, category="climate", description="steering heat on"),
     Command("steering-off", _p("steering/off"), "flat", stable=True, category="climate", description="steering heat off"),
+    Command("fridge-on", _p("refrigerator/open"), "ops", category="climate",
+            description="fridge on in a mode at a temperature (if fitted)",
+            ops={"refrigeratorOperationType": "on", "workingMode": 1, "refrigeratorTemperature": 3.0}),
+    Command("fridge-off", _p("refrigerator/close"), "flat", category="climate", description="fridge off"),
     # body
     Command("lock", _p("door/lock"), "flat", stable=True, category="body", description="lock doors"),
     Command("unlock", _p("door/unlock"), "flat", pin=True, category="body", description="unlock doors (PIN)"),
@@ -79,6 +83,14 @@ CATALOG: dict[str, Command] = {c.name: c for c in [
 
 
 CLIMATE_TEMP_RANGE = (18.0, 32.0)   # °C
+
+# Fridge / warmer box. The car reports and accepts a working mode and a target
+# temperature; each running mode has its own range. "off" is only reported,
+# never sent: switching off is its own command.
+FRIDGE_MODES = {"refrigerate": 1, "heat": 2, "freeze": 4}
+FRIDGE_OFF_CODE = 3
+FRIDGE_TEMP_RANGE = {"refrigerate": (0.0, 20.0), "heat": (35.0, 50.0), "freeze": (-15.0, -1.0)}   # °C
+FRIDGE_DEFAULT_TEMP = {"refrigerate": 3.0, "heat": 42.0, "freeze": -12.0}
 CLIMATE_MINUTES_RANGE = (5, 60)
 
 
@@ -115,3 +127,29 @@ def build_body(cmd: Command, vin: str, overrides: dict[str, Any] | None = None) 
     if cmd.kind == "ops":
         return {"identifier": {"vin": vin}, "operations": [{**cmd.ops, **overrides}]}
     raise ValueError(f"unknown command kind {cmd.kind!r}")
+
+
+def validate_fridge(mode: Any, temperature: Any = None) -> tuple[int, float]:
+    """Check fridge inputs before anything is sent to the car; raises ValueError.
+
+    ``mode`` is "refrigerate", "heat" or "freeze". ``temperature`` is checked
+    against that mode's range and then rounded to a whole degree (halves round to
+    the even degree). When omitted it defaults to this library's setting for the
+    mode — refrigerate 3, heat 42, freeze -12 °C — not a value read from the car.
+    """
+    if not isinstance(mode, str) or mode not in FRIDGE_MODES:
+        raise ValueError(f"mode must be one of {', '.join(FRIDGE_MODES)}")
+    if temperature is None:
+        temperature = FRIDGE_DEFAULT_TEMP[mode]
+    if isinstance(temperature, bool):
+        raise ValueError("temperature must be a number")
+    try:
+        t = float(temperature)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError("temperature must be a number") from None
+    if not math.isfinite(t):
+        raise ValueError("temperature must be finite")
+    lo, hi = FRIDGE_TEMP_RANGE[mode]
+    if not lo <= t <= hi:
+        raise ValueError(f"{mode} temperature must be between {lo:g} and {hi:g} °C")
+    return FRIDGE_MODES[mode], float(round(t))

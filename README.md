@@ -69,8 +69,29 @@ gac charge <VIN> pause            # or: now
 ## What you can read
 
 State of charge, range, odometer, charging state and mode, plugged-in, cabin
-temperature, 12 V battery, GPS, doors / windows / boot / lock state, and per-tyre
-pressure (in kPa) and temperature.
+temperature, 12 V battery, GPS, doors / windows / boot / lock state, per-tyre
+pressure (in kPa) and temperature, and, where fitted, the fridge's mode and target
+temperature (`status.fridge_mode`, `status.fridge_temp_c`).
+
+## Fridge
+
+On cars with a fridge / warmer box:
+
+```python
+await client.fridge_on(vin, mode="refrigerate", temperature=3)   # 0 to 20 °C
+await client.fridge_on(vin, mode="heat", temperature=42)         # 35 to 50 °C
+await client.fridge_on(vin, mode="freeze", temperature=-12)      # -15 to -1 °C
+await client.fridge_off(vin)
+```
+
+Each temperature is checked against the mode's range, then rounded to a whole
+degree; bad values raise `ValueError` before anything is sent. Without a
+temperature, this library's default for the mode is sent (refrigerate 3, heat 42,
+freeze -12 °C), which also resets the target if the fridge is already running.
+Calling `fridge_on` while the fridge runs changes its mode or temperature.
+
+An accepted request is not proof the car applied it; check `status.fridge_mode`.
+How long the fridge keeps running after the car powers down depends on the car.
 
 ## Command results
 
@@ -125,6 +146,12 @@ EV brands into Home Assistant and Python, among them:
 - [kvanbiesen/bmw-cardata-ha](https://github.com/kvanbiesen/bmw-cardata-ha) — BMW CarData
 
 Thanks to their authors for showing what a good community integration looks like.
+
+## Changes
+
+- **0.2.0b7** — fridge / warmer box: `fridge_on(mode, temperature)` and
+  `fridge_off()`, with per-mode temperature ranges checked before sending, and
+  the fridge's mode and target temperature in the vehicle status.
 
 ## License
 
