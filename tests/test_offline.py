@@ -79,6 +79,7 @@ async def test_client_constructs():
         async with aiohttp.ClientSession() as http:
             c = GacClient("AU", http)
             assert c.region == "AU"
+            assert GacClient("GR", http).region == "GR"
             with pytest.raises(RegionError):
                 GacClient("ZZ", http)
     except RuntimeError as exc:
