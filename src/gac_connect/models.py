@@ -124,6 +124,11 @@ class VehicleStatus:
     fridge_fitted: bool = False
     fridge_mode: str | None = None           # "off" | "refrigerate" | "heat" | "freeze"
     fridge_temp_c: float | None = None       # target, reported only while running
+    # what the fridge does once you leave the car: "timed" or "unlimited"
+    fridge_keep_mode: str | None = None
+    # remaining minutes the service reports for a timed setting; None when unavailable,
+    # invalid, or the setting is unlimited or unknown
+    fridge_keep_minutes: int | None = None
     # the charge reservation as the service reports it (time of day on the
     # service's clock, which need not match the car's local time)
     charge_window_start: str | None = None
@@ -137,6 +142,7 @@ class VehicleStatus:
     _LOCK_LOCKED = 0
     # refrigeratorAccessors[].workingMode
     _FRIDGE_MODE = {1: "refrigerate", 2: "heat", 3: "off", 4: "freeze"}
+    _FRIDGE_KEEP = {1: "timed", 0: "unlimited"}
     # tyre report order (positions unverified; documented as such)
     _TYRE_POS = {1: "front left", 2: "front right", 3: "rear left", 4: "rear right"}
 
@@ -152,6 +158,10 @@ class VehicleStatus:
         steer = _first(results, "steeringAccessors")
         light = _first(results, "lightAccessors")
         fridge = _first(results, "refrigeratorAccessors")
+        keep_mode = cls._FRIDGE_KEEP.get(_exact_int(fridge.get("leavingVehicleStatus")))
+        keep_minutes = _exact_int(fridge.get("surplusTime")) if keep_mode == "timed" else None
+        if keep_minutes is not None and keep_minutes < 0:
+            keep_minutes = None
 
         soc = _num(drv.get("remainElectricityPercentage"))
         cur = _num(chg.get("chargingCurrent"))
@@ -248,6 +258,8 @@ class VehicleStatus:
             fridge_fitted=bool(results.get("refrigeratorAccessors")),
             fridge_mode=cls._FRIDGE_MODE.get(_exact_int(fridge.get("workingMode"))),
             fridge_temp_c=_finite(fridge.get("refrigeratorTemperature")),
+            fridge_keep_mode=keep_mode,
+            fridge_keep_minutes=keep_minutes,
             charge_window_start=_hhmm(chg.get("dailyReservationStartTime")),
             charge_window_stop=_hhmm(chg.get("dailyReservationStopTime")),
             charge_weekly=int(weekly) if weekly is not None else None,

@@ -359,3 +359,21 @@ def test_status_fridge_huge_numbers():
     from gac_connect.models import VehicleStatus
     s = VehicleStatus.from_results({"refrigeratorAccessors": [{"workingMode": 10**400, "refrigeratorTemperature": 10**400}]})
     assert s.fridge_mode is None and s.fridge_temp_c is None
+
+
+def test_status_fridge_keep_running():
+    from gac_connect.models import VehicleStatus
+    def st(**f):
+        return VehicleStatus.from_results({"refrigeratorAccessors": [{"workingMode": 1, "refrigeratorTemperature": 5, **f}]})
+    assert (st(leavingVehicleStatus=1, surplusTime=45).fridge_keep_mode, st(leavingVehicleStatus=1, surplusTime=45).fridge_keep_minutes) == ("timed", 45)
+    assert st(leavingVehicleStatus=1, surplusTime=30.0).fridge_keep_minutes == 30
+    assert st(leavingVehicleStatus=1, surplusTime=0).fridge_keep_minutes == 0
+    s = st(leavingVehicleStatus=0, surplusTime=500)            # unlimited: minutes suppressed
+    assert (s.fridge_keep_mode, s.fridge_keep_minutes) == ("unlimited", None)
+    for bad in ({"leavingVehicleStatus": 7}, {"leavingVehicleStatus": True}, {"leavingVehicleStatus": 1.5}, {}):
+        s = st(surplusTime=30, **bad)
+        assert s.fridge_keep_mode is None and s.fridge_keep_minutes is None, bad
+    for bad in (-5, 2.5, float("nan"), float("inf"), float("-inf"), 10**400, True, "x", None):
+        assert st(leavingVehicleStatus=1, surplusTime=bad).fridge_keep_minutes is None, bad
+    none = VehicleStatus.from_results({})
+    assert none.fridge_keep_mode is None and none.fridge_keep_minutes is None

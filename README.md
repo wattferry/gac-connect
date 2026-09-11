@@ -70,8 +70,9 @@ gac charge <VIN> pause            # or: now
 
 State of charge, range, odometer, charging state and mode, plugged-in, cabin
 temperature, 12 V battery, GPS, doors / windows / boot / lock state, per-tyre
-pressure (in kPa) and temperature, and, where fitted, the fridge's mode and target
-temperature (`status.fridge_mode`, `status.fridge_temp_c`).
+pressure (in kPa) and temperature, and, where fitted, the fridge's mode, target
+temperature and keep-running setting (`status.fridge_mode`, `status.fridge_temp_c`,
+`status.fridge_keep_mode`, `status.fridge_keep_minutes`).
 
 ## Fridge
 
@@ -91,7 +92,12 @@ freeze -12 °C), which also resets the target if the fridge is already running.
 Calling `fridge_on` while the fridge runs changes its mode or temperature.
 
 An accepted request is not proof the car applied it; check `status.fridge_mode`.
-How long the fridge keeps running after the car powers down depends on the car.
+
+How long the fridge keeps running after you leave the car is a setting in the car.
+`status.fridge_keep_mode` reports it as `"timed"` or `"unlimited"`. For a timed
+setting, `status.fridge_keep_minutes` reports the remaining minutes supplied by the
+service, which count down once you leave the car, or `None` when unavailable or
+invalid. It is always `None` for unlimited or unknown settings.
 
 ## Command results
 
@@ -148,6 +154,9 @@ EV brands into Home Assistant and Python, among them:
 Thanks to their authors for showing what a good community integration looks like.
 
 ## Changes
+
+- **0.2.0b8** — the fridge's keep-running setting in the vehicle status:
+  `fridge_keep_mode` (timed or unlimited) and `fridge_keep_minutes` (time left).
 
 - **0.2.0b7** — fridge / warmer box: `fridge_on(mode, temperature)` and
   `fridge_off()`, with per-mode temperature ranges checked before sending, and
