@@ -127,6 +127,35 @@ car's schedule. The car applies commands asynchronously: pausing usually takes
 effect quickly, resuming can take several minutes and may be delayed or fail — so
 pause only for sustained periods.
 
+## Request limits
+
+Every request the library sends passes one limiter shared by all clients in the
+process (`gac_connect.DEFAULT_LIMITER`); a client given its own `Limiter` is held
+to both, so creating clients never resets the limits. Requests go out one at a
+time, even across threads, at least a second apart, and no more than 20 a minute,
+240 an hour and 3000 a day (`const.REQUEST_BUDGETS`, rolling windows, each
+request counted when it finishes). Vehicle commands also have their own budget of
+6 a minute and 60 an hour (`const.COMMAND_BUDGETS`). If the service answers "too
+many requests", nothing is sent for at least 60 seconds, or for its `Retry-After`
+(seconds or a date) up to a day. Past any of these the client raises
+`RateLimitedError` (with `retry_after` in seconds) without sending anything.
+
+The shared limiter keeps its state in a small file, locked while each request
+runs, so every program and every run on the machine shares one budget and one
+pause: a script restarted in a loop is limited like one that keeps running. The
+file lives in your cache folder (`~/.cache/gac-connect/limits.json` on Linux,
+`~/Library/Caches/gac-connect/` on macOS, `%LOCALAPPDATA%\gac-connect\` on
+Windows) or wherever `GAC_CONNECT_LIMITS` points. If it cannot be read or written,
+nothing is sent. If it is corrupt, a copy is kept (`limits.corrupt`) and requests
+pause for a day, since any pause recorded in it is unknown; delete the file to reset
+it sooner. A host that stores the state itself can set
+`DEFAULT_LIMITER.state_path = None` before its first request and use
+`export_state()` / `import_state()` instead (the Home Assistant integration does).
+
+What is counted: requests this library sends on one machine. Other machines, the
+official app, and the push channel's broker connection are not counted. A poll
+every few minutes is plenty for most uses.
+
 ## Notes and limits
 
 - Sign-in needs a human: a slide puzzle and an SMS code. There is no headless login.
@@ -154,6 +183,17 @@ EV brands into Home Assistant and Python, among them:
 Thanks to their authors for showing what a good community integration looks like.
 
 ## Changes
+
+- **0.2.0b9** — request limits: one `Limiter` shared by every client in a process
+  (and kept between CLI runs), sending one request at a time with rolling budgets
+  per minute, hour and day, a separate command budget, and a pause after any 429
+  answer (Retry-After as seconds or a date, up to a day); requests over a limit
+  raise `RateLimitedError` without being sent. The shared limiter's state is kept
+  in a file in the user's cache folder, so separate runs share it; a client's own
+  limiter applies on top of it. Limiter state can be exported and restored. Redirects are
+  not followed. Token refreshes are coordinated between clients, rotated tokens are
+  saved before use, and a session that can no longer refresh is not retried until
+  a new session is stored.
 
 - **0.2.0b8** — the fridge's keep-running setting in the vehicle status:
   `fridge_keep_mode` (timed or unlimited) and `fridge_keep_minutes` (time left).

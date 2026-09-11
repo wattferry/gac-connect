@@ -86,6 +86,7 @@ async def _run(coro):
 
 
 def _client(http: aiohttp.ClientSession, region: str) -> GacClient:
+    # the shared limiter keeps its state between runs, so a loop around the CLI is limited too
     return GacClient(region, http, FileStore(SESSION))
 
 

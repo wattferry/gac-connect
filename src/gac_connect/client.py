@@ -18,12 +18,22 @@ Design notes:
   refresh raises :class:`AuthExpiredError` (reauth).
 * Vehicle commands are never auto-retried (a duplicate can double-actuate); reads
   are refreshed-and-retried once on an invalid token.
+* Every request goes through one :class:`~gac_connect.limits.Limiter`, shared by
+  all clients in the process unless another is given: one request at a time, at
+  most one per MIN_REQUEST_GAP, within the rolling REQUEST_BUDGETS (and
+  COMMAND_BUDGETS for commands), and nothing at all during a cool-down after a
+  429. Over a limit the client raises RateLimitedError without sending.
+* Token refreshes are serialised; a refresh that fails for good is remembered,
+  so a dead session is never retried until the next sign-in.
 """
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import random
+import threading
 import time
+from contextlib import AsyncExitStack
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -39,7 +49,6 @@ from .const import (
     IOV_APP_ID,
     IOV_VERSION,
     MAIN_APP_ID,
-    MIN_REQUEST_GAP,
     REGIONS,
     SSO_SERVICE_ID,
     USER_AGENT,
@@ -56,9 +65,14 @@ from .errors import (
     TokenInvalidError,
 )
 from .keys import Material, load_material
+from .limits import DEFAULT_LIMITER, Limiter, parse_retry_after
 from .models import Vehicle, VehicleStatus
 from .session import MemoryStore, Session, TokenStore
 from .signing import IOV_FIELDS, MAIN_FIELDS, sign
+
+# One token refresh at a time in the process, so clients sharing a session (and a
+# store) never spend the same single-use refresh token twice.
+_REFRESH_GATE = threading.Lock()
 
 
 def _request_id() -> str:
@@ -77,6 +91,7 @@ class GacClient:
         store: TokenStore | None = None,
         *,
         material: Material | None = None,
+        limiter: Limiter | None = None,
     ) -> None:
         if region not in REGIONS:
             raise RegionError(f"unknown region {region!r}; known: {', '.join(REGIONS)}")
@@ -87,18 +102,21 @@ class GacClient:
         self._m = material or load_material()
         self._session = Session(region=region)
         self._captcha: Captcha | None = None
-        # Hard request throttle: no two gateway calls closer than MIN_REQUEST_GAP,
-        # serialized, regardless of how the client is driven. Caps the absolute
-        # request rate so a misbehaving caller (a looping automation, a spammed
-        # button) can never hammer the gateway.
-        self._req_lock = asyncio.Lock()
-        self._last_request = 0.0
+        # Every request passes the process-wide limiter; a caller's own limiter (for
+        # example one kept in a file) is applied on top of it, never instead of it.
+        self._limiters = (limiter, DEFAULT_LIMITER) if limiter not in (None, DEFAULT_LIMITER) else (DEFAULT_LIMITER,)
+        self._auth_dead = False      # a refresh failed for good; only a new session clears it
+        self._dead_refresh: str | None = None
 
     # ---- lifecycle -------------------------------------------------------
     async def load(self) -> None:
         """Restore a persisted session (call once before use)."""
         self._session = await self._store.load()
         self._session.region = self.region
+        if self._session.expired:
+            self._auth_dead = True      # stored as expired by this or another client
+        elif self._auth_dead and self._session.refresh_token != self._dead_refresh:
+            self._auth_dead = False     # a different (new) session was stored
 
     async def _persist(self) -> None:
         await self._store.save(self._session)
@@ -108,25 +126,21 @@ class GacClient:
         return self._session
 
     # ---- low-level transport --------------------------------------------
-    async def _throttle(self) -> None:
-        async with self._req_lock:
-            gap = MIN_REQUEST_GAP - (time.monotonic() - self._last_request)
-            if gap > 0:
-                await asyncio.sleep(gap)
-            self._last_request = time.monotonic()
-
-    async def _post(self, host: str, path: str, wrapper: dict, headers: dict) -> Any:
-        await self._throttle()
+    async def _post(self, host: str, path: str, wrapper: dict, headers: dict, kind: str = "request") -> Any:
         url = f"https://{host}{path}"
         timeout = aiohttp.ClientTimeout(total=HTTP_TIMEOUT)
-        async with self._http.post(url, data=_dumps(wrapper), headers=headers, timeout=timeout) as resp:
-            raw = await resp.read()
-            if resp.status == 429:
-                retry = resp.headers.get("Retry-After")
-                raise RateLimitedError(
-                    "gateway rate-limited the request",
-                    retry_after=float(retry) if retry and retry.isdigit() else None,
-                )
+        async with AsyncExitStack() as held:
+            for limiter in self._limiters:
+                await held.enter_async_context(limiter.slot(kind))
+            async with self._http.post(url, data=_dumps(wrapper), headers=headers, timeout=timeout,
+                                       allow_redirects=False, raise_for_status=False) as resp:
+                if resp.status == 429:
+                    seconds = parse_retry_after(resp.headers.get("Retry-After"))
+                    pause = max(limiter.block(seconds) for limiter in self._limiters)
+                    raise RateLimitedError("the service rate-limited the request", retry_after=pause)
+                if 300 <= resp.status < 400:
+                    raise CommandError(f"unexpected redirect ({resp.status}) from {path}; not followed")
+                raw = await resp.read()
         try:
             outer = _loads(raw)
         except ValueError as exc:
@@ -154,7 +168,8 @@ class GacClient:
         headers["sig"] = sign(headers, wrapper, fields=MAIN_FIELDS, hmac_key=self._m.main_hmac)
         return await self._post(self._cfg["main"], f"/gateway/v1{path}", wrapper, headers)
 
-    async def _iov_call(self, path: str, body: Any, *, sensitive: dict[str, str] | None = None) -> Any:
+    async def _iov_call(self, path: str, body: Any, *, sensitive: dict[str, str] | None = None,
+                        kind: str = "request") -> Any:
         wrapper, key, iv = encrypt_envelope(body, self._m.iov.public)
         headers = {
             "user-agent": USER_AGENT, "fnc-app-type": "android", "locale": "en",
@@ -170,7 +185,7 @@ class GacClient:
                 headers[name] = encrypt_sensitive(value, key, iv)
             headers["fnc-sensitive-fields"] = ",".join(sensitive)
         headers["sig"] = sign(headers, wrapper, fields=IOV_FIELDS, hmac_key=self._m.iov_hmac)
-        return await self._post(self._cfg["iov"], f"/gateway{path}", wrapper, headers)
+        return await self._post(self._cfg["iov"], f"/gateway{path}", wrapper, headers, kind)
 
     @staticmethod
     def _data(resp: Any) -> Any:
@@ -247,6 +262,8 @@ class GacClient:
         if not (isinstance(d, dict) and d.get("token")):
             raise LoginError(f"IoV session exchange failed: {_msg(sso)}")
         self._apply_iov_tokens(d)
+        self._session.expired = False
+        self._auth_dead, self._dead_refresh = False, None
         await self._persist()
 
     def _apply_iov_tokens(self, d: dict) -> None:
@@ -255,17 +272,66 @@ class GacClient:
         self._session.expire_time = d.get("expireTime")
         self._session.rexpire_time = d.get("rexpireTime")
 
-    async def _refresh(self) -> None:
-        if not self._session.refresh_valid:
-            raise AuthExpiredError("refresh token expired; sign in again")
-        resp = await self._iov_call("/refresh/token", {"refreshToken": self._session.refresh_token})
-        d = self._data(resp)
-        if isinstance(resp, dict) and resp.get("code") == ERR_REFRESH_SPENT:
-            raise AuthExpiredError("refresh token spent; sign in again")
-        if not (isinstance(d, dict) and d.get("token")):
-            raise AuthExpiredError(f"refresh failed: {_msg(resp)}")
-        self._apply_iov_tokens(d)
-        await self._persist()  # persist the rotated pair BEFORE any retry
+    async def _ensure_token(self) -> None:
+        """Make sure the IoV token is usable; never sends anything for a dead session."""
+        if self._auth_dead:
+            raise AuthExpiredError("session expired; sign in again")
+        if not self._session.access_valid:
+            await self._refresh()
+
+    async def _refresh(self, stale_token: str | None = None) -> None:
+        """Rotate the IoV tokens once, however many callers need it at the same time.
+
+        ``stale_token`` is the token a request was rejected with; if another caller
+        has already replaced it, nothing is sent. The rotated pair is saved before
+        anything uses it.
+        """
+        while not _REFRESH_GATE.acquire(blocking=False):
+            await asyncio.sleep(0.02)
+        try:
+            if self._auth_dead:
+                raise AuthExpiredError("session expired; sign in again")
+            stored = await self._store.load()     # another client on this store may have rotated
+            if stored.expired and not stored.refresh_token:
+                self._auth_dead, self._dead_refresh = True, self._session.refresh_token
+                raise AuthExpiredError("session expired; sign in again")
+            if (stored.token and stored.access_valid and stored.token != self._session.token
+                    and stored.refresh_token != self._session.refresh_token):
+                stored.region = self.region
+                self._session = stored
+                return
+            if stale_token is None and self._session.access_valid:
+                return
+            if stale_token is not None and self._session.token != stale_token:
+                return
+            try:
+                if not self._session.refresh_valid:
+                    raise AuthExpiredError("refresh token expired; sign in again")
+                resp = await self._iov_call("/refresh/token", {"refreshToken": self._session.refresh_token})
+                d = self._data(resp)
+                if isinstance(resp, dict) and resp.get("code") == ERR_REFRESH_SPENT:
+                    raise AuthExpiredError("refresh token spent; sign in again")
+                if not (isinstance(d, dict) and d.get("token")):
+                    raise AuthExpiredError(f"refresh failed: {_msg(resp)}")
+            except AuthExpiredError:
+                self._auth_dead, self._dead_refresh = True, self._session.refresh_token
+                # Store the dead session without its tokens, so other clients on this
+                # store and later runs fail locally instead of trying it again.
+                try:
+                    await self._store.save(dataclasses.replace(
+                        self._session, token=None, refresh_token=None, expire_time=None, rexpire_time=None,
+                        expired=True))
+                except Exception as exc:  # noqa: BLE001 — the failure below is what matters
+                    self._limiters[-1].warn("could not store the expired session: %s", exc)
+                raise
+            rotated = dataclasses.replace(self._session, token=d.get("token"), refresh_token=d.get("refreshToken"),
+                                          expire_time=d.get("expireTime"), rexpire_time=d.get("rexpireTime"))
+            try:
+                await self._store.save(rotated)   # saved BEFORE any request uses it
+            finally:
+                self._session = rotated           # the old pair is spent either way
+        finally:
+            _REFRESH_GATE.release()
 
     # ---- reads -----------------------------------------------------------
     async def list_vehicles(self) -> list[Vehicle]:
@@ -290,19 +356,17 @@ class GacClient:
 
     async def _iov_read(self, path: str, body: Any, *, sensitive: dict | None = None) -> Any:
         """A read that refreshes-and-retries once on an invalid token."""
-        if not self._session.access_valid and self._session.refresh_valid:
-            await self._refresh()
+        await self._ensure_token()
+        used = self._session.token
         resp = await self._iov_call(path, body, sensitive=sensitive)
         if isinstance(resp, dict) and resp.get("code") == ERR_TOKEN_INVALID:
-            await self._refresh()
+            await self._refresh(stale_token=used)
             resp = await self._iov_call(path, body, sensitive=sensitive)
         return resp
 
     # ---- push channel ----------------------------------------------------
     async def mqtt_info(self) -> dict:
         """Broker details for the command-result feed (short-lived password)."""
-        if not self._session.access_valid and self._session.refresh_valid:
-            await self._refresh()
         resp = await self._iov_read("/mqtt/info", {})
         data = self._data(resp)
         if not isinstance(data, dict) or not data.get("host"):
@@ -320,10 +384,9 @@ class GacClient:
             raise CommandError(f"unknown command {name!r}")
         if cmd.pin:
             raise PinRequiredError(f"{name} needs the remote-control PIN, not yet supported")
-        if not self._session.access_valid and self._session.refresh_valid:
-            await self._refresh()
+        await self._ensure_token()
         body = commands.build_body(cmd, vin, overrides)
-        resp = await self._iov_call(cmd.path, body, sensitive={"vin": vin})
+        resp = await self._iov_call(cmd.path, body, sensitive={"vin": vin}, kind="command")
         # Commands are NOT auto-retried on an invalid token (could double-actuate);
         # surface it so the caller decides.
         return _command_result(resp)
@@ -372,10 +435,9 @@ class GacClient:
         return await self._reservation(vin, op)
 
     async def _reservation(self, vin: str, operation: dict) -> Any:
-        if not self._session.access_valid and self._session.refresh_valid:
-            await self._refresh()
+        await self._ensure_token()
         resp = await self._iov_call(vehicle._RESERVATION, vehicle.reservation_body(vin, operation),
-                                    sensitive={"vin": vin})
+                                    sensitive={"vin": vin}, kind="command")
         return _command_result(resp)
 
 

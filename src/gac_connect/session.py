@@ -27,6 +27,8 @@ class Session:
     main_refresh_token: str | None = None
     region: str = "AU"
     vin: str | None = None
+    # set when the session can no longer be refreshed; cleared by a new sign-in
+    expired: bool = False
 
     @property
     def access_valid(self) -> bool:

@@ -17,12 +17,15 @@ from .errors import (
     RateLimitedError,
     RegionError,
 )
+from .limits import DEFAULT_LIMITER, Limiter
 from .push import BrokerInfo, PushClient, PushResult, interpret
 
-__version__ = "0.2.0b8"
+__version__ = "0.2.0b9"
 
 __all__ = [
     "AuthError",
+    "DEFAULT_LIMITER",
+    "Limiter",
     "BrokerInfo",
     "PushClient",
     "PushResult",

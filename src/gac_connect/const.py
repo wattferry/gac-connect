@@ -46,6 +46,21 @@ MIN_POLL_INTERVAL: Final = 30.0
 # Hard floor between ANY two gateway requests, serialized in the client. Normal
 # polling is minutes apart so this never bites; it only caps bursts/misuse.
 MIN_REQUEST_GAP: Final = 1.0
+# Rolling budgets per client, as (window seconds, most requests in that window).
+# Every gateway request counts, whatever triggered it (polls, refreshes, sign-in,
+# push-channel details, commands). Past a limit the client refuses locally with
+# RateLimitedError and sends nothing until the window frees up. Normal use (a poll
+# every few minutes plus the odd command) stays far below all of them.
+REQUEST_BUDGETS: Final = ((60, 20), (3600, 240), (86400, 3000))
+# Vehicle commands reach the car itself, so they get their own, tighter budgets.
+COMMAND_BUDGETS: Final = ((60, 6), (3600, 60))
+# After the gateway answers 429, nothing is sent for this long, or for its
+# Retry-After if that is longer (capped at MAX_RATE_LIMIT_COOLDOWN, one day).
+RATE_LIMIT_COOLDOWN: Final = 60.0
+MAX_RATE_LIMIT_COOLDOWN: Final = 86400.0
+# If a saved request-limit record is corrupt, any pause in it is unknown: pause as
+# long as the longest pause the service could have asked for.
+RECOVERY_PAUSE: Final = MAX_RATE_LIMIT_COOLDOWN
 
 # Gateway result codes.
 CODE_OK: Final = "0000"

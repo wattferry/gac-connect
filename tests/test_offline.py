@@ -377,3 +377,686 @@ def test_status_fridge_keep_running():
         assert st(leavingVehicleStatus=1, surplusTime=bad).fridge_keep_minutes is None, bad
     none = VehicleStatus.from_results({})
     assert none.fridge_keep_mode is None and none.fridge_keep_minutes is None
+
+
+
+class _FakeResp:
+    def __init__(self, status=200, body=b'{"success": true, "data": {"results": [{}]}}', headers=None, read_error=None):
+        self.status, self._body, self.headers, self._read_error = status, body, headers or {}, read_error
+    async def read(self):
+        if self._read_error:
+            raise self._read_error
+        return self._body
+    async def __aenter__(self):
+        return self
+    async def __aexit__(self, *exc):
+        return False
+
+
+class _FakeHttp:
+    """Counts every request that would have reached the network, and how many overlap."""
+    def __init__(self, resp=None, route=None, delay=0.0):
+        self.calls, self.resp, self.route, self.delay = 0, resp or _FakeResp(), route, delay
+        self.kwargs, self.paths, self.in_flight, self.max_in_flight, self.times = [], [], 0, 0, []
+    def post(self, url, **kw):
+        import time
+        self.calls += 1
+        self.kwargs.append(kw)
+        self.paths.append(url)
+        self.times.append(time.monotonic())
+        resp = self.route(url) if self.route else self.resp
+        fake = self
+        class _Ctx:
+            async def __aenter__(self):
+                import asyncio
+                fake.in_flight += 1
+                fake.max_in_flight = max(fake.max_in_flight, fake.in_flight)
+                if fake.delay:
+                    await asyncio.sleep(fake.delay)
+                return resp
+            async def __aexit__(self, *exc):
+                fake.in_flight -= 1
+                return False
+        return _Ctx()
+
+
+def _limiter(**kw):
+    from gac_connect.limits import Limiter
+    kw.setdefault("min_gap", 0.0)
+    return Limiter(**kw)
+
+
+def _client(http, limiter=None, token_valid=True):
+    import time
+    from gac_connect.client import GacClient
+    c = GacClient("AU", http, limiter=limiter or _limiter())
+    now = int(time.time() * 1000)
+    c._session.token, c._session.expire_time = "t", now + (3_600_000 if token_valid else -1000)
+    c._session.refresh_token, c._session.rexpire_time = "r", now + 3_600_000
+    return c
+
+
+def test_request_budget_refuses_without_sending():
+    import asyncio
+    import pytest
+    from gac_connect.errors import RateLimitedError
+    http = _FakeHttp()
+    c = _client(http, _limiter(request_budgets=((60, 3), (3600, 100))))
+    async def go():
+        for _ in range(3):
+            await c.get_status("VIN")
+        for _ in range(50):                       # a looping caller
+            with pytest.raises(RateLimitedError) as info:
+                await c.get_status("VIN")
+            assert 0 < info.value.retry_after <= 60
+    asyncio.run(go())
+    assert http.calls == 3
+
+
+def test_retry_after_is_the_longest_wait():
+    import asyncio
+    import pytest
+    from gac_connect.errors import RateLimitedError
+    http = _FakeHttp()
+    c = _client(http, _limiter(request_budgets=((60, 2), (3600, 2))))
+    async def go():
+        await c.get_status("VIN"); await c.get_status("VIN")
+        with pytest.raises(RateLimitedError) as info:
+            await c.get_status("VIN")
+        assert info.value.retry_after > 3500      # the hour budget, not the minute one
+    asyncio.run(go())
+
+
+def test_budget_frees_up_as_the_window_moves():
+    import asyncio
+    http = _FakeHttp()
+    lim = _limiter(request_budgets=((60, 2),))
+    c = _client(http, lim)
+    async def go():
+        await c.get_status("VIN"); await c.get_status("VIN")
+        lim._sent[0] -= 61                        # the oldest request leaves the window
+        await c.get_status("VIN")
+    asyncio.run(go())
+    assert http.calls == 3
+
+
+def test_new_clients_share_the_default_limiter():
+    import asyncio
+    import pytest
+    from gac_connect.client import GacClient
+    from gac_connect.errors import RateLimitedError
+    from gac_connect.limits import DEFAULT_LIMITER
+    http = _FakeHttp()
+    a, b = GacClient("AU", http), GacClient("NZ", http)
+    assert a._limiters == (DEFAULT_LIMITER,) and b._limiters == (DEFAULT_LIMITER,)
+    own = _limiter()
+    assert GacClient("AU", http, limiter=own)._limiters == (own, DEFAULT_LIMITER)
+    # a shared limiter's budget binds every client using it
+    lim = _limiter(request_budgets=((60, 2),))
+    clients = [_client(http, lim) for _ in range(25)]
+    async def go():
+        for c in clients[:2]:
+            await c.get_status("VIN")
+        for c in clients[2:]:
+            with pytest.raises(RateLimitedError):
+                await c.get_status("VIN")
+    asyncio.run(go())
+    assert http.calls == 2
+
+
+def test_requests_go_one_at_a_time_with_the_gap_after_completion():
+    import asyncio
+    http = _FakeHttp(delay=0.05)
+    c = _client(http, _limiter(min_gap=0.1))
+    async def go():
+        await asyncio.gather(*(c.get_status("VIN") for _ in range(4)))
+    asyncio.run(go())
+    assert http.max_in_flight == 1
+    starts = http.times
+    assert all(b - a >= 0.15 - 0.01 for a, b in zip(starts, starts[1:], strict=False))   # 0.05 s request + 0.1 s gap
+
+
+def test_command_budget_is_separate_and_counted_at_dispatch():
+    import asyncio
+    import pytest
+    from gac_connect.errors import RateLimitedError
+    http = _FakeHttp(_FakeResp(body=b'{"success": true, "data": {}}'))
+    lim = _limiter(command_budgets=((60, 2),))
+    c = _client(http, lim)
+    async def go():
+        await c.command("VIN", "horn-on"); await c.command("VIN", "horn-on")
+        with pytest.raises(RateLimitedError):
+            await c.command("VIN", "horn-on")
+        with pytest.raises(RateLimitedError):
+            await c.charge_now("VIN")             # reservation commands share the budget
+        await c.get_status("VIN")                 # reads are still allowed
+    asyncio.run(go())
+    assert http.calls == 3 and len(lim._commands) == 2   # refused commands consumed nothing
+
+
+def test_a_refused_request_does_not_use_up_the_command_budget():
+    import asyncio
+    import pytest
+    from gac_connect.errors import RateLimitedError
+    http = _FakeHttp(_FakeResp(body=b'{"success": true, "data": {}}'))
+    lim = _limiter(request_budgets=((60, 1),), command_budgets=((60, 5),))
+    c = _client(http, lim)
+    async def go():
+        await c.get_status("VIN")
+        with pytest.raises(RateLimitedError):
+            await c.command("VIN", "horn-on")
+    asyncio.run(go())
+    assert len(lim._commands) == 0
+
+
+def test_429_pauses_everything_and_is_seen_before_the_body():
+    import asyncio
+    import pytest
+    from gac_connect.errors import RateLimitedError
+    http = _FakeHttp(_FakeResp(status=429, headers={"Retry-After": "120"}, read_error=ConnectionResetError()))
+    lim = _limiter()
+    c = _client(http, lim)
+    async def go():
+        with pytest.raises(RateLimitedError) as first:
+            await c.get_status("VIN")
+        assert 119 < first.value.retry_after <= 120
+        http.resp = _FakeResp()
+        for _ in range(10):
+            with pytest.raises(RateLimitedError) as info:
+                await c.get_status("VIN")
+            assert 100 < info.value.retry_after <= 120
+    asyncio.run(go())
+    assert http.calls == 1
+
+
+def test_a_waiting_request_sees_a_pause_set_while_it_waited():
+    import asyncio
+    from gac_connect.errors import RateLimitedError
+    http = _FakeHttp(_FakeResp(status=429, headers={"Retry-After": "60"}), delay=0.05)
+    c = _client(http, _limiter(min_gap=0.05))
+    async def go():
+        return await asyncio.gather(*(c.get_status("VIN") for _ in range(3)), return_exceptions=True)
+    out = asyncio.run(go())
+    assert all(isinstance(r, RateLimitedError) for r in out)
+    assert http.calls == 1
+
+
+def test_a_shorter_429_does_not_shorten_a_longer_pause():
+    import time
+    lim = _limiter()
+    lim.block(3600)
+    lim.block(60)
+    assert lim._blocked_until - time.monotonic() > 3500
+
+
+def test_retry_after_forms():
+    from email.utils import format_datetime
+    from datetime import UTC, datetime, timedelta
+    from gac_connect.const import MAX_RATE_LIMIT_COOLDOWN, RATE_LIMIT_COOLDOWN
+    from gac_connect.limits import parse_retry_after
+    now = datetime.now(UTC)
+    assert parse_retry_after(None) == RATE_LIMIT_COOLDOWN
+    assert parse_retry_after("5") == RATE_LIMIT_COOLDOWN
+    assert parse_retry_after("600") == 600
+    assert parse_retry_after("7200") == 7200                      # a two-hour pause is honoured
+    assert parse_retry_after("999999") == MAX_RATE_LIMIT_COOLDOWN
+    assert 590 <= parse_retry_after(format_datetime(now + timedelta(minutes=10), usegmt=True)) <= 600
+    assert parse_retry_after(format_datetime(now - timedelta(minutes=10), usegmt=True)) == RATE_LIMIT_COOLDOWN
+    assert parse_retry_after("soon") == RATE_LIMIT_COOLDOWN
+
+
+def test_redirects_are_not_followed():
+    import asyncio
+    import pytest
+    from gac_connect.errors import CommandError
+    http = _FakeHttp(_FakeResp(status=302, headers={"Location": "https://elsewhere/"}))
+    c = _client(http)
+    with pytest.raises(CommandError):
+        asyncio.run(c.get_status("VIN"))
+    assert http.calls == 1
+    assert http.kwargs[0]["allow_redirects"] is False and http.kwargs[0]["raise_for_status"] is False
+
+
+def _refresh_route(refresh_body):
+    def route(url):
+        if url.endswith("/refresh/token"):
+            return _FakeResp(body=refresh_body)
+        return _FakeResp()
+    return route
+
+
+def test_concurrent_callers_share_one_token_refresh():
+    import asyncio
+    import json
+    import time
+    later = int(time.time() * 1000) + 3_600_000
+    body = json.dumps({"success": True, "data": {"token": "t2", "refreshToken": "r2",
+                                                  "expireTime": later, "rexpireTime": later}}).encode()
+    http = _FakeHttp(route=_refresh_route(body))
+    c = _client(http, token_valid=False)
+    async def go():
+        await asyncio.gather(*(c.get_status("VIN") for _ in range(5)))
+    asyncio.run(go())
+    assert sum(p.endswith("/refresh/token") for p in http.paths) == 1
+    assert c._session.token == "t2"
+
+
+def test_a_dead_session_is_not_retried():
+    import asyncio
+    import json
+    import pytest
+    from gac_connect.errors import AuthExpiredError
+    http = _FakeHttp(route=_refresh_route(json.dumps({"success": False, "code": "ACCOUNT.0015"}).encode()))
+    c = _client(http, token_valid=False)
+    async def go():
+        for _ in range(5):
+            with pytest.raises(AuthExpiredError):
+                await c.get_status("VIN")
+        with pytest.raises(AuthExpiredError):
+            await c.command("VIN", "horn-on")
+    asyncio.run(go())
+    assert http.calls == 1
+
+
+def test_limits_carry_across_runs_with_a_state_file(tmp_path):
+    import asyncio
+    import pytest
+    from gac_connect.errors import RateLimitedError
+    state = tmp_path / "limits.json"
+    http = _FakeHttp()
+    async def run_once(budget_left):
+        c = _client(http, _limiter(request_budgets=((60, 2),), state_path=state))   # a fresh process
+        if budget_left:
+            await c.get_status("VIN")
+        else:
+            with pytest.raises(RateLimitedError):
+                await c.get_status("VIN")
+    asyncio.run(run_once(True)); asyncio.run(run_once(True)); asyncio.run(run_once(False))
+    assert http.calls == 2
+    lim = _limiter(state_path=tmp_path / "pause.json")
+    lim.block(600)
+    again = _limiter(state_path=tmp_path / "pause.json")
+    again._load()
+    import time
+    assert again._blocked_until - time.monotonic() > 590
+
+
+def test_default_budgets_allow_normal_use():
+    from gac_connect.const import COMMAND_BUDGETS, MIN_REQUEST_GAP, REQUEST_BUDGETS
+    budgets = dict(REQUEST_BUDGETS)
+    assert budgets[3600] >= 60 + 60           # polling every minute plus a busy hour of commands and refreshes
+    assert budgets[86400] >= 24 * 60 + 500    # polling every minute all day, with headroom
+    assert budgets[60] <= 60 / MIN_REQUEST_GAP
+    assert dict(COMMAND_BUDGETS)[60] >= 3
+
+
+def test_an_own_limiter_cannot_bypass_the_shared_one():
+    import asyncio
+    import pytest
+    from gac_connect.errors import RateLimitedError
+    from gac_connect.limits import DEFAULT_LIMITER
+    DEFAULT_LIMITER.request_budgets = ((60, 2),)          # restored by the conftest fixture
+    http = _FakeHttp()
+    async def go():
+        for i in range(10):
+            c = _client(http, _limiter())                     # a fresh, empty limiter every time
+            if i < 2:
+                await c.get_status("VIN")
+            else:
+                with pytest.raises(RateLimitedError):
+                    await c.get_status("VIN")
+    asyncio.run(go())
+    assert http.calls == 2
+
+
+def test_requests_are_counted_when_they_finish():
+    import asyncio
+    import time
+    http = _FakeHttp(delay=0.2)
+    lim = _limiter()
+    c = _client(http, lim)
+    asyncio.run(c.get_status("VIN"))
+    assert time.monotonic() - lim._sent[-1] < 0.1 and lim._last_done == lim._sent[-1]
+
+
+def test_threads_with_their_own_event_loops_still_go_one_at_a_time():
+    import asyncio
+    import threading
+    lim = _limiter()
+    state = {"now": 0, "max": 0}
+    guard = threading.Lock()
+    async def one():
+        async with lim.slot():
+            with guard:
+                state["now"] += 1; state["max"] = max(state["max"], state["now"])
+            await asyncio.sleep(0.05)
+            with guard:
+                state["now"] -= 1
+    async def two():
+        await asyncio.gather(one(), one())
+    def worker():
+        asyncio.run(two())
+    threads = [threading.Thread(target=worker) for _ in range(3)]
+    for t in threads: t.start()
+    for t in threads: t.join(10)
+    assert state["max"] == 1
+
+
+def test_two_limiters_on_one_state_file_do_not_freeze_the_loop(tmp_path):
+    import asyncio
+    a, b = _limiter(state_path=tmp_path / "s.json"), _limiter(state_path=tmp_path / "s.json")
+    order = []
+    async def use(lim, name):
+        async with lim.slot():
+            order.append(name); await asyncio.sleep(0.05)
+    async def go():
+        await asyncio.wait_for(asyncio.gather(use(a, "a"), use(b, "b"), use(a, "a2")), timeout=5)
+    asyncio.run(go())
+    assert sorted(order) == ["a", "a2", "b"]
+
+
+def test_nothing_is_sent_if_the_limits_cannot_be_recorded(tmp_path, monkeypatch):
+    import asyncio
+    import pathlib
+    import pytest
+    from gac_connect.errors import RateLimitedError
+    http = _FakeHttp()
+    c = _client(http, _limiter(state_path=tmp_path / "s.json"))
+    def broken(self, *a, **kw):
+        raise OSError("disk full")
+    monkeypatch.setattr(pathlib.Path, "write_text", broken)
+    with pytest.raises(RateLimitedError):
+        asyncio.run(c.get_status("VIN"))
+    assert http.calls == 0
+
+
+def test_a_dead_session_stays_dead_even_with_an_unexpired_token():
+    import asyncio
+    import json
+    import pytest
+    from gac_connect.errors import AuthExpiredError
+    def route(url):
+        if url.endswith("/refresh/token"):
+            return _FakeResp(body=json.dumps({"success": False, "code": "ACCOUNT.0015"}).encode())
+        return _FakeResp(body=json.dumps({"success": False, "code": "SDK.GATE.0007"}).encode())
+    http = _FakeHttp(route=route)
+    c = _client(http)                          # token looks valid locally; the service rejects it
+    async def go():
+        with pytest.raises(AuthExpiredError):
+            await c.get_status("VIN")              # read, refresh (spent)
+        for call in (c.get_status("VIN"), c.get_position("VIN"), c.command("VIN", "horn-on"), c.mqtt_info()):
+            with pytest.raises(AuthExpiredError):
+                await call
+    asyncio.run(go())
+    assert http.calls == 2
+
+
+def test_rotated_tokens_are_saved_before_use_and_shared_through_the_store():
+    import asyncio
+    import json
+    import time
+    from gac_connect.session import MemoryStore, Session
+    later = int(time.time() * 1000) + 3_600_000
+    body = json.dumps({"success": True, "data": {"token": "t2", "refreshToken": "r2",
+                                                  "expireTime": later, "rexpireTime": later}}).encode()
+    http = _FakeHttp(route=_refresh_route(body))
+    expired = Session(token="t", refresh_token="r", expire_time=1, rexpire_time=later)
+    store = MemoryStore(expired)
+    seen = []
+    orig = store.save
+    async def save(sess):
+        seen.append((sess.token, a._session.token, b._session.token))
+        await orig(sess)
+    store.save = save
+    from gac_connect.client import GacClient
+    a, b = GacClient("AU", http, store, limiter=_limiter()), GacClient("AU", http, store, limiter=_limiter())
+    async def go():
+        await a.load(); await b.load()
+        await asyncio.gather(a.get_status("VIN"), b.get_status("VIN"))
+    asyncio.run(go())
+    assert sum(p.endswith("/refresh/token") for p in http.paths) == 1
+    assert seen == [("t2", "t", "t")]           # saved while neither client used it yet
+    assert a._session.token == b._session.token == "t2"
+
+
+def test_an_unreadable_limits_file_pauses_instead_of_resetting(tmp_path):
+    import asyncio
+    import pytest
+    from gac_connect.errors import RateLimitedError
+    for junk in ("{broken", "null", '{"sent": "invalid"}', '{"sent": [], "commands": [], "blocked_until": 0}'):
+        state = tmp_path / "s.json"
+        state.write_text(junk)
+        http = _FakeHttp()
+        with pytest.raises(RateLimitedError):
+            asyncio.run(_client(http, _limiter(state_path=state)).get_status("VIN"))
+        assert http.calls == 0, junk
+
+
+def test_restored_state_keeps_every_request():
+    import time
+    lim = _limiter()
+    t = time.time() + 30          # all "in the future" (a clock that went back) collapse to now...
+    assert lim.import_state({"sent": [t, t + 1, t + 2], "commands": [t, t + 1, t + 2], "blocked_until": 0, "last_done": 0})
+    assert len(lim._sent) == 3 and len(lim._commands) == 3     # ...but each still counts
+    assert not lim.import_state({"sent": "x"}) and len(lim._sent) == 3
+
+
+def test_an_interrupted_request_is_counted_conservatively(tmp_path):
+    import asyncio
+    import json
+    import time
+    lim = _limiter(state_path=tmp_path / "s.json")
+    async def go():
+        async with lim.slot():
+            saved = json.loads((tmp_path / "s.json").read_text())
+            assert saved["sent"][-1] >= time.time() + 15      # reserved at the latest possible finish
+    asyncio.run(go())
+    assert json.loads((tmp_path / "s.json").read_text())["sent"][-1] <= time.time()
+
+
+def test_a_dead_session_is_stored_so_other_clients_do_not_retry_it():
+    import asyncio
+    import json
+    import time
+    import pytest
+    from gac_connect.client import GacClient
+    from gac_connect.errors import AuthExpiredError
+    from gac_connect.session import MemoryStore, Session
+    later = int(time.time() * 1000) + 3_600_000
+    http = _FakeHttp(route=_refresh_route(json.dumps({"success": False, "code": "ACCOUNT.0015"}).encode()))
+    store = MemoryStore(Session(token="t", refresh_token="r", expire_time=1, rexpire_time=later))
+    async def go():
+        for _ in range(3):
+            c = GacClient("AU", http, store, limiter=_limiter())
+            await c.load()
+            with pytest.raises(AuthExpiredError):
+                await c.get_status("VIN")
+    asyncio.run(go())
+    assert http.calls == 1
+
+
+_RUN_ONCE = r"""
+import asyncio, sys, time
+sys.path.insert(0, sys.argv[1])
+from gac_connect.client import GacClient
+from gac_connect.errors import RateLimitedError
+
+class Resp:
+    status, headers = 429, {"Retry-After": "120"}
+    async def read(self): return b"{}"
+    async def __aenter__(self): return self
+    async def __aexit__(self, *e): return False
+
+class Http:
+    def post(self, *a, **k):
+        print("SENT", flush=True)
+        return Resp()
+
+async def main():
+    c = GacClient("AU", Http())
+    now = int(time.time() * 1000)
+    c._session.token, c._session.expire_time = "t", now + 3_600_000
+    try:
+        await c.get_status("VIN")
+    except RateLimitedError:
+        print("LIMITED", flush=True)
+
+asyncio.run(main())
+"""
+
+
+def test_a_script_restarted_in_a_loop_is_still_limited(tmp_path):
+    import os
+    import pathlib
+    import subprocess
+    import sys
+    src = str(pathlib.Path(__file__).resolve().parents[1] / "src")
+    env = {**os.environ, "GAC_CONNECT_LIMITS": str(tmp_path / "limits.json")}
+    outs = [subprocess.run([sys.executable, "-c", _RUN_ONCE, src], env=env, capture_output=True, text=True, timeout=60)  # noqa: S603
+            for _ in range(4)]
+    sent = sum(o.stdout.count("SENT") for o in outs)
+    assert sent == 1, [o.stdout + o.stderr for o in outs]   # the 429 pause holds for every later run
+    assert all("LIMITED" in o.stdout for o in outs)
+
+
+def test_a_corrupt_limits_file_pauses_long_then_recovers(tmp_path):
+    import asyncio
+    import json
+    import time
+    import pytest
+    from gac_connect.const import RECOVERY_PAUSE
+    from gac_connect.errors import RateLimitedError
+    state = tmp_path / "s.json"
+    state.write_text("{broken")
+    http = _FakeHttp()
+    with pytest.raises(RateLimitedError) as info:
+        asyncio.run(_client(http, _limiter(state_path=state)).get_status("VIN"))
+    assert info.value.retry_after > RECOVERY_PAUSE - 5
+    assert (tmp_path / "s.corrupt").read_text() == "{broken"       # kept for inspection
+    saved = json.loads(state.read_text())                           # rewritten, with the pause in it
+    assert saved["blocked_until"] > time.time() + RECOVERY_PAUSE - 5
+    saved["blocked_until"] = 0                                       # ...once the pause has passed
+    state.write_text(json.dumps(saved))
+    asyncio.run(_client(http, _limiter(state_path=state)).get_status("VIN"))
+    assert http.calls == 1
+
+
+def test_a_failed_recovery_write_still_pauses_later_runs(tmp_path, monkeypatch):
+    import asyncio
+    import pathlib
+    import pytest
+    from gac_connect.errors import RateLimitedError
+    state = tmp_path / "s.json"
+    state.write_text("{broken")
+    real = pathlib.Path.write_text
+    def failing(self, *a, **kw):
+        if self.name.endswith(".tmp"):
+            raise OSError("disk full")
+        return real(self, *a, **kw)
+    monkeypatch.setattr(pathlib.Path, "write_text", failing)
+    http = _FakeHttp()
+    with pytest.raises(RateLimitedError):
+        asyncio.run(_client(http, _limiter(state_path=state)).get_status("VIN"))
+    monkeypatch.setattr(pathlib.Path, "write_text", real)
+    assert state.read_text() == "{broken"                 # the record was not lost
+    for _ in range(5):                                     # every later run pauses again
+        with pytest.raises(RateLimitedError):
+            asyncio.run(_client(http, _limiter(state_path=state)).get_status("VIN"))
+    assert http.calls == 0
+
+
+def test_a_failed_read_keeps_the_record_and_its_pause(tmp_path, monkeypatch):
+    import asyncio
+    import pathlib
+    import pytest
+    from gac_connect.errors import RateLimitedError
+    state = tmp_path / "s.json"
+    lim = _limiter(state_path=state)
+    lim.block(3600)
+    before = state.read_text()
+    real = pathlib.Path.read_text
+    def flaky(self, *a, **kw):
+        if self == state:
+            raise OSError("temporarily unavailable")
+        return real(self, *a, **kw)
+    monkeypatch.setattr(pathlib.Path, "read_text", flaky)
+    http = _FakeHttp()
+    with pytest.raises(RateLimitedError):
+        asyncio.run(_client(http, _limiter(state_path=state)).get_status("VIN"))
+    monkeypatch.setattr(pathlib.Path, "read_text", real)
+    assert state.read_text() == before and http.calls == 0          # untouched; the hour-long pause stands
+    with pytest.raises(RateLimitedError) as info:
+        asyncio.run(_client(http, _limiter(state_path=state)).get_status("VIN"))
+    assert info.value.retry_after > 3500 and http.calls == 0
+
+
+_RUN_OK = r"""
+import asyncio, sys, time
+sys.path.insert(0, sys.argv[1])
+from gac_connect.client import GacClient
+from gac_connect.errors import RateLimitedError
+from gac_connect.limits import DEFAULT_LIMITER
+DEFAULT_LIMITER.min_gap = 0.0
+DEFAULT_LIMITER.request_budgets = ((3600, 3),)
+DEFAULT_LIMITER.command_budgets = ((3600, 2),)
+
+class Resp:
+    status, headers = 200, {}
+    async def read(self): return b'{"success": true, "data": {"results": [{}]}}'
+    async def __aenter__(self): return self
+    async def __aexit__(self, *e): return False
+
+class Http:
+    def post(self, *a, **k):
+        print("SENT", flush=True)
+        return Resp()
+
+async def main():
+    c = GacClient("AU", Http())
+    now = int(time.time() * 1000)
+    c._session.token, c._session.expire_time = "t", now + 3_600_000
+    try:
+        await (c.command("VIN", "horn-on") if sys.argv[2] == "command" else c.get_status("VIN"))
+    except RateLimitedError:
+        print("LIMITED", flush=True)
+
+asyncio.run(main())
+"""
+
+
+def test_used_up_budgets_hold_across_separate_runs(tmp_path):
+    import os
+    import pathlib
+    import subprocess
+    import sys
+    src = str(pathlib.Path(__file__).resolve().parents[1] / "src")
+    def run(kind, path):
+        env = {**os.environ, "GAC_CONNECT_LIMITS": str(path)}
+        return subprocess.run([sys.executable, "-c", _RUN_OK, src, kind], env=env,  # noqa: S603
+                              capture_output=True, text=True, timeout=60).stdout
+    reads = [run("read", tmp_path / "a.json") for _ in range(5)]
+    assert sum(o.count("SENT") for o in reads) == 3 and sum(o.count("LIMITED") for o in reads) == 2
+    cmds = [run("command", tmp_path / "b.json") for _ in range(4)]
+    assert sum(o.count("SENT") for o in cmds) == 2 and sum(o.count("LIMITED") for o in cmds) == 2
+
+
+def test_clients_already_running_see_a_session_another_client_found_dead():
+    import asyncio
+    import json
+    import time
+    import pytest
+    from gac_connect.client import GacClient
+    from gac_connect.errors import AuthExpiredError
+    from gac_connect.session import MemoryStore, Session
+    later = int(time.time() * 1000) + 3_600_000
+    http = _FakeHttp(route=_refresh_route(json.dumps({"success": False, "code": "ACCOUNT.0015"}).encode()))
+    store = MemoryStore(Session(token="t", refresh_token="r", expire_time=1, rexpire_time=later))
+    clients = [GacClient("AU", http, store, limiter=_limiter()) for _ in range(3)]
+    async def go():
+        for c in clients:
+            await c.load()                      # all loaded before anything fails
+        for c in clients:
+            with pytest.raises(AuthExpiredError):
+                await c.get_status("VIN")
+    asyncio.run(go())
+    assert http.calls == 1
