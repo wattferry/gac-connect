@@ -20,6 +20,8 @@ REGIONS: Final[dict[str, dict[str, str]]] = {
            "tel": "+65", "tz": "Asia/Singapore", "supported": False},
     "AE": {"main": "sa-app-api.gac-international.com", "iov": "eu-iov-sdk-access.gac-international.com",
            "tel": "+971", "tz": "Asia/Dubai", "supported": False},
+    "GR": {"main": "nl-app-api.gac-international.com", "iov": "eu-iov-sdk-access.gac-international.com",
+           "tel": "+30", "tz": "Europe/Athens", "supported": False},
 }
 DEFAULT_REGION: Final = "AU"
 
