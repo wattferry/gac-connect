@@ -184,6 +184,9 @@ Thanks to their authors for showing what a good community integration looks like
 
 ## Changes
 
+- **0.2.0b10** — Greece (`GR`) added to the regions (best-effort; shares the EU
+  gateway). Thanks to @panosru.
+
 - **0.2.0b9** — request limits: one `Limiter` shared by every client in a process
   (and kept between CLI runs), sending one request at a time with rolling budgets
   per minute, hour and day, a separate command budget, and a pause after any 429
