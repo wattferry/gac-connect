@@ -79,9 +79,18 @@ async def test_client_constructs():
         async with aiohttp.ClientSession() as http:
             c = GacClient("AU", http)
             assert c.region == "AU"
+            assert c.timezone == "Australia/Brisbane"
             assert GacClient("GR", http).region == "GR"
+            assert GacClient("IL", http).timezone == "Asia/Jerusalem"
+            # a country spanning several zones can be told which one the car is in
+            assert GacClient("RU", http, timezone="Asia/Vladivostok").timezone == "Asia/Vladivostok"
             with pytest.raises(RegionError):
                 GacClient("ZZ", http)
+            with pytest.raises(RegionError):
+                GacClient("AU", http, timezone="Mars/Olympus_Mons")
+            # the region default is not loaded at construction, so a system with no
+            # time-zone database can still sign in and read status
+            assert GacClient("AU", http)._tz is None
     except RuntimeError as exc:
         pytest.skip(str(exc))  # material missing
 
@@ -1061,3 +1070,68 @@ def test_clients_already_running_see_a_session_another_client_found_dead():
                 await c.get_status("VIN")
     asyncio.run(go())
     assert http.calls == 1
+
+
+def test_region_table():
+    from zoneinfo import ZoneInfo
+
+    from gac_connect.const import CONFIRMED_REGIONS, LISTED_REGIONS, REGIONS
+
+    # Every country the 2.0.25 build configures, with the main-API host it maps to.
+    assert len(REGIONS) == 56
+    assert CONFIRMED_REGIONS <= LISTED_REGIONS <= set(REGIONS)
+    for code, cfg in REGIONS.items():
+        assert len(code) == 2 and code.isupper()
+        assert cfg["main"].endswith("-app-api.gac-international.com")
+        assert cfg["iov"].endswith("-iov-sdk-access.gac-international.com")
+        assert cfg["tel"].startswith("+") and cfg["tel"][1:].isdigit()
+        ZoneInfo(cfg["tz"])          # raises if the zone name is wrong
+    # The SE-Asia gateway only exists under its -public- name; the others do not.
+    sea = {c for c, cfg in REGIONS.items() if cfg["main"].startswith("sg-")}
+    assert sea and all(REGIONS[c]["iov"].startswith("sea-public-") for c in sea)
+    assert not any(cfg["iov"].startswith("sea-iov") for cfg in REGIONS.values())
+    # Spot checks against the app's own region switch.
+    assert REGIONS["IL"]["main"] == "nl-app-api.gac-international.com"
+    assert REGIONS["IL"]["iov"] == "eu-iov-sdk-access.gac-international.com"
+    assert REGIONS["AE"]["iov"] == "me-iov-sdk-access.gac-international.com"
+    assert REGIONS["BR"]["iov"] == "sa-iov-sdk-access.gac-international.com"
+    assert REGIONS["RU"]["main"] == "ru-app-api.gac-international.com"
+
+
+def test_default_timezone_is_not_loaded_until_a_charge_window_needs_it():
+    """A slim image with no tz database must still build a client and read status."""
+    import asyncio
+    import importlib.abc
+    import zoneinfo
+
+    class _NoTzdata(importlib.abc.MetaPathFinder):
+        def find_spec(self, name, path, target=None):
+            if name == "tzdata" or name.startswith("tzdata."):
+                raise ImportError("no tzdata (simulated minimal image)")
+
+    from gac_connect.errors import RegionError
+
+    async def go():
+        import aiohttp
+        from gac_connect.client import GacClient
+        async with aiohttp.ClientSession() as http:
+            c = GacClient("AU", http)          # must not raise without a zone database
+            assert c.timezone == "Australia/Brisbane"
+            with pytest.raises(RegionError) as exc:
+                c._zone()
+            assert "tzdata" in str(exc.value)
+
+    before = zoneinfo.TZPATH
+    sys.meta_path.insert(0, _NoTzdata())
+    zoneinfo.reset_tzpath([])
+    # ZoneInfo caches by key, so an earlier test that built this zone would hand it
+    # back from the cache and hide the very thing this test checks.
+    zoneinfo.ZoneInfo.clear_cache(only_keys=["Australia/Brisbane"])
+    try:
+        asyncio.run(go())
+    except RuntimeError as exc:
+        pytest.skip(str(exc))                  # material missing
+    finally:
+        zoneinfo.reset_tzpath(list(before))
+        sys.meta_path.pop(0)
+        zoneinfo.ZoneInfo.clear_cache(only_keys=["Australia/Brisbane"])

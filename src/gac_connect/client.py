@@ -92,11 +92,18 @@ class GacClient:
         *,
         material: Material | None = None,
         limiter: Limiter | None = None,
+        timezone: str | None = None,
     ) -> None:
         if region not in REGIONS:
             raise RegionError(f"unknown region {region!r}; known: {', '.join(REGIONS)}")
         self.region = region
         self._cfg = REGIONS[region]
+        # Charge windows are given in local clock time, so a country spanning several
+        # zones (RU, BR, MX, ID, AU, ES, PT, CL) needs the car's own, not the table's.
+        self.timezone = timezone or self._cfg["tz"]
+        self._tz: ZoneInfo | None = None
+        if timezone is not None:
+            self._zone()      # a zone the caller named is checked now, not at the first window
         self._http = http
         self._store = store or MemoryStore()
         self._m = material or load_material()
@@ -107,6 +114,23 @@ class GacClient:
         self._limiters = (limiter, DEFAULT_LIMITER) if limiter not in (None, DEFAULT_LIMITER) else (DEFAULT_LIMITER,)
         self._auth_dead = False      # a refresh failed for good; only a new session clears it
         self._dead_refresh: str | None = None
+
+    def _zone(self) -> ZoneInfo:
+        """The zone charge windows are scheduled in, loaded the first time one is.
+
+        Reading status needs no time-zone database, so a system without one (a
+        slim container, Windows without ``tzdata``) stays usable for everything
+        except scheduling.
+        """
+        if self._tz is None:
+            try:
+                self._tz = ZoneInfo(self.timezone)
+            except (KeyError, ValueError) as exc:
+                raise RegionError(
+                    f"time zone {self.timezone!r} is unavailable; check the name, or install "
+                    "the 'tzdata' package if this system has no time-zone database"
+                ) from exc
+        return self._tz
 
     # ---- lifecycle -------------------------------------------------------
     async def load(self) -> None:
@@ -160,7 +184,7 @@ class GacClient:
             "user-agent": USER_AGENT, "fnc-app-type": "android", "locale": "en",
             "fnc-fnc-os-version-type": "2.0.25", "fnc-app-id": MAIN_APP_ID,
             "fnc-timestamp": _now_ms(), "region": self.region,
-            "fnc-client-timezone": self._cfg["tz"], "fnc-requestId": _request_id(),
+            "fnc-client-timezone": self.timezone, "fnc-requestId": _request_id(),
             "content-type": "application/json; charset=utf-8",
         }
         if authorization:
@@ -176,7 +200,7 @@ class GacClient:
             "fnc-fnc-os-version-type": "2.0.25", "fnc-request-id": _request_id(),
             "content-type": "application/json; charset=utf-8", "fnc-version": IOV_VERSION,
             "fnc-app-id": IOV_APP_ID, "fnc-timestamp": _now_ms(),
-            "fnc-icv-timezone": self._cfg["tz"],
+            "fnc-icv-timezone": self.timezone,
         }
         if self._session.token:
             headers["token"] = self._session.token
@@ -426,11 +450,11 @@ class GacClient:
         return await self._reservation(vin, vehicle.charge_now_operation(until_soc=until_soc))
 
     async def charge_pause(self, vin: str) -> Any:
-        return await self._reservation(vin, vehicle.pause_operation(ZoneInfo(self._cfg["tz"])))
+        return await self._reservation(vin, vehicle.pause_operation(self._zone()))
 
     async def set_charge_window(self, vin: str, start: str, stop: str, *,
                                 weekly: int = 0, until_soc: bool = False) -> Any:
-        op = vehicle.window_operation(start, stop, ZoneInfo(self._cfg["tz"]),
+        op = vehicle.window_operation(start, stop, self._zone(),
                                       weekly=weekly, until_soc=until_soc)
         return await self._reservation(vin, op)
 

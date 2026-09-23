@@ -15,8 +15,9 @@ accounts — read your vehicle's status and control charging from your own code.
 > affiliates. GAC and AION are third-party trademarks of their respective
 > owners. Use it with a vehicle you own, on your own account.
 
-Supports **Australia and New Zealand**. Other regions are listed as best-effort —
-reports welcome.
+Confirmed against **Australia and New Zealand**. Every other country the app
+itself is configured for is in the region table too, transcribed from the app
+rather than tested — see [Regions](#regions). Reports welcome.
 
 ## Install
 
@@ -120,6 +121,40 @@ push.stop()
 await task
 ```
 
+## Regions
+
+`GacClient(region, ...)` takes an ISO country code. The table in
+`gac_connect.const.REGIONS` covers all 56 countries the 2.0.25 app build is
+configured for, with the two hosts, calling code and time zone each one uses:
+
+```python
+from gac_connect.const import CONFIRMED_REGIONS, LISTED_REGIONS, REGIONS
+
+REGIONS["IL"]        # {'main': 'nl-app-api...', 'iov': 'eu-iov-sdk-access...', 'tel': '+972', ...}
+sorted(LISTED_REGIONS)     # the 21 the app offers in its own country picker
+sorted(CONFIRMED_REGIONS)  # the ones this library has actually signed in to
+```
+
+Three tiers, narrowest first:
+
+- **Confirmed** (`AU`, `NZ`) — signed in and driven a car with.
+- **Listed** — the app's own country picker offers them, so accounts exist:
+  `AE AU BR ES FI GR HK ID IL KH KW MO MX NZ PH PL PT RU SA SG TH`.
+- **The rest** — wired into the build ahead of sale. The hosts are right; whether
+  there is an account behind them is another matter.
+
+Nothing in the protocol is region-specific — same keys, same signing, same
+endpoints — so a region is only ever the four values above. If one does not work,
+it is worth a report.
+
+The table carries one time zone per country, which is a guess wherever a country
+spans several (RU, BR, MX, ID, AU, ES, PT, CL). Charge windows are set in local
+clock time, so give the car's own zone when the default is not it:
+
+```python
+client = GacClient("RU", http, timezone="Asia/Vladivostok")   # gac charge ... --timezone
+```
+
 ## Charging control
 
 `charge_now`, `charge_pause`, and `set_charge_window` gate charging through the
@@ -183,6 +218,13 @@ EV brands into Home Assistant and Python, among them:
 Thanks to their authors for showing what a good community integration looks like.
 
 ## Changes
+
+- **0.2.0b11** — all 56 regions the app is configured for, read out of the 2.0.25
+  Android build rather than guessed: `IL` (Israel) among them, plus `LISTED_REGIONS`
+  and `CONFIRMED_REGIONS` to say how far each one has been checked. Fixes the IoV
+  gateway for the Singapore and Middle East regions, which pointed at the EU one.
+  `GacClient(..., timezone=...)` (and `gac charge --timezone`) overrides the
+  region's default zone for countries that span several.
 
 - **0.2.0b10** — Greece (`GR`) added to the regions (best-effort; shares the EU
   gateway). Thanks to @panosru.

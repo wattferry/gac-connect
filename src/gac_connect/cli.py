@@ -85,9 +85,9 @@ async def _run(coro):
     return await coro
 
 
-def _client(http: aiohttp.ClientSession, region: str) -> GacClient:
+def _client(http: aiohttp.ClientSession, region: str, timezone: str | None = None) -> GacClient:
     # the shared limiter keeps its state between runs, so a loop around the CLI is limited too
-    return GacClient(region, http, FileStore(SESSION))
+    return GacClient(region, http, FileStore(SESSION), timezone=timezone)
 
 
 @app.command()
@@ -149,11 +149,11 @@ def status(vin: str, region: str = "AU") -> None:
 
 
 @app.command()
-def charge(vin: str, action: str, region: str = "AU") -> None:
-    """Charge control: action = now | pause."""
+def charge(vin: str, action: str, region: str = "AU", timezone: str = "") -> None:
+    """Charge control: action = now | pause. --timezone overrides the region's default."""
     async def go() -> None:
         async with aiohttp.ClientSession() as http:
-            client = _client(http, region)
+            client = _client(http, region, timezone or None)
             await client.load()
             if action == "now":
                 await client.charge_now(vin)
