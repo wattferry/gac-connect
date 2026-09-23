@@ -7,12 +7,11 @@ from typing import Final
 # two separate crypto profiles.
 IOV_PREFIX: Final = "/iov-vehicle-gateway/v1/platform/vehicle/access_gateway"
 
-# Both hosts are built from a per-country prefix, the way the app builds them, so
-# the table holds prefixes instead of repeating two long names 56 times. The main
-# API prefix comes from the 2.0.25 Android build's assets/env/release.json; the
-# IoV prefix comes from the same build's gateway region switch, whose default is
-# "sea". That switch also spells the one irregular host: a "sea" gateway exists
-# only as sea-public-iov-sdk-access, never as bare sea-iov-sdk-access.
+# Both hosts are built from a per-country prefix, so the table holds prefixes
+# instead of repeating two long names 56 times. Each country has a main API prefix
+# and an IoV gateway prefix (the IoV default is "sea"). The one irregular host is
+# the "sea" gateway: it exists only as sea-public-iov-sdk-access, never as bare
+# sea-iov-sdk-access.
 _MAIN_HOST: Final = "{}-app-api.gac-international.com"
 _IOV_HOST: Final = "{}-iov-sdk-access.gac-international.com"
 
@@ -88,7 +87,7 @@ LISTED_REGIONS: Final = frozenset({
 })
 
 # Regions this library has been signed in and driven a car with. Everything else
-# is the app's own configuration, transcribed but untested — reports welcome.
+# is listed but untested — reports welcome.
 CONFIRMED_REGIONS: Final = frozenset({"AU", "NZ"})
 
 REGIONS: Final[dict[str, dict[str, str]]] = {

@@ -15,9 +15,9 @@ accounts — read your vehicle's status and control charging from your own code.
 > affiliates. GAC and AION are third-party trademarks of their respective
 > owners. Use it with a vehicle you own, on your own account.
 
-Confirmed against **Australia and New Zealand**. Every other country the app
-itself is configured for is in the region table too, transcribed from the app
-rather than tested — see [Regions](#regions). Reports welcome.
+Confirmed against **Australia and New Zealand**. Every other country the service
+supports is in the region table too, listed but not yet tested — see
+[Regions](#regions). Reports welcome.
 
 ## Install
 
@@ -124,8 +124,8 @@ await task
 ## Regions
 
 `GacClient(region, ...)` takes an ISO country code. The table in
-`gac_connect.const.REGIONS` covers all 56 countries the 2.0.25 app build is
-configured for, with the two hosts, calling code and time zone each one uses:
+`gac_connect.const.REGIONS` covers all 56 countries the service is configured
+for, with the two hosts, calling code and time zone each one uses:
 
 ```python
 from gac_connect.const import CONFIRMED_REGIONS, LISTED_REGIONS, REGIONS
@@ -268,8 +268,8 @@ Thanks to their authors for showing what a good community integration looks like
   configured for are supported (see the b11 note below), with Israel (`IL`)
   reported working. Also: `FileStore` expands `~`.
 
-- **0.2.0b11** — all 56 regions the app is configured for, read out of the 2.0.25
-  Android build rather than guessed: `IL` (Israel) among them, plus `LISTED_REGIONS`
+- **0.2.0b11** — all 56 regions the service supports: `IL` (Israel) among them,
+  plus `LISTED_REGIONS`
   and `CONFIRMED_REGIONS` to say how far each one has been checked. Fixes the IoV
   gateway for the Singapore and Middle East regions, which pointed at the EU one.
   `GacClient(..., timezone=...)` (and `gac charge --timezone`) overrides the
