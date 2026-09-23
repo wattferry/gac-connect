@@ -289,6 +289,30 @@ class GacClient:
         self._session.expired = False
         self._auth_dead, self._dead_refresh = False, None
         await self._persist()
+        await self._rotate_account_token()
+
+    async def _rotate_account_token(self) -> None:
+        """Refresh the account token once, now that it has minted the vehicle session.
+
+        A vehicle session is ended along with the account token that minted it: by
+        a logout, or by a sign-in elsewhere replacing it, such as the official app
+        signing in. Once that token has been refreshed away, ending its successor no
+        longer reaches the vehicle session. The app refreshes its account token as a
+        matter of course, which is why sessions it minted outlive later sign-ins;
+        without this, one minted here was ended by the next app sign-in. Best
+        effort: if it fails, the signed-in session is kept as it was.
+        """
+        if not (self._session.main_token and self._session.main_refresh_token):
+            return
+        resp = await self._main_call(
+            "/iam/api/user/token/refresh/sec", {"refreshToken": self._session.main_refresh_token},
+            authorization=self._session.main_token,
+        )
+        d = self._data(resp)
+        if self._ok(resp) and isinstance(d, dict) and d.get("token"):
+            self._session.main_token = d["token"]
+            self._session.main_refresh_token = d.get("refreshToken") or self._session.main_refresh_token
+            await self._persist()
 
     def _apply_iov_tokens(self, d: dict) -> None:
         self._session.token = d.get("token")
@@ -334,7 +358,15 @@ class GacClient:
                 resp = await self._iov_call("/refresh/token", {"refreshToken": self._session.refresh_token})
                 d = self._data(resp)
                 if isinstance(resp, dict) and resp.get("code") == ERR_REFRESH_SPENT:
-                    raise AuthExpiredError("refresh token spent; sign in again")
+                    # Not time-expired (refresh_valid passed above), so the gateway has
+                    # retired this token: it was used already, or the session was ended
+                    # server-side. The official app signing in has been seen to end a
+                    # session this library minted minutes earlier, so name both causes.
+                    raise AuthExpiredError(
+                        "the gateway rejected this refresh token: it was already used (another client "
+                        "on the same saved session), or the session was ended by a sign-in elsewhere, "
+                        "such as the official app. Sign in again to recover"
+                    )
                 if not (isinstance(d, dict) and d.get("token")):
                     raise AuthExpiredError(f"refresh failed: {_msg(resp)}")
             except AuthExpiredError:

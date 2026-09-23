@@ -139,7 +139,9 @@ Three tiers, narrowest first:
 
 - **Confirmed** (`AU`, `NZ`) — signed in and driven a car with.
 - **Listed** — the app's own country picker offers them, so accounts exist:
-  `AE AU BR ES FI GR HK ID IL KH KW MO MX NZ PH PL PT RU SA SG TH`.
+  `AE AU BR ES FI GR HK ID IL KH KW MO MX NZ PH PL PT RU SA SG TH`. `IL` has a
+  second-hand report of working; it stays out of the confirmed set until someone
+  says so first-hand.
 - **The rest** — wired into the build ahead of sale. The hosts are right; whether
   there is an account behind them is another matter.
 
@@ -154,6 +156,43 @@ clock time, so give the car's own zone when the default is not it:
 ```python
 client = GacClient("RU", http, timezone="Asia/Vladivostok")   # gac charge ... --timezone
 ```
+
+## Sharing a session
+
+The IoV refresh token is **single-use**: each refresh mints a replacement and
+retires the one it was given. A session is therefore a chain, and only one holder
+can advance it. Two things working through the same saved session will spend each
+other's tokens, and whichever refreshes second is told its token was already used
+and has to sign in again.
+
+So give each client its own sign-in. Two Home Assistant entries pointed at one
+stored session, the CLI sharing a session file with Home Assistant, or a session
+copied between machines will all fail this way, intermittently and confusingly.
+The same applies if a rotation is not saved: `TokenStore.save` is called on every
+rotation and must durably persist before the next request, which is why the
+default `MemoryStore` is only suitable for a single short-lived process.
+
+### Running alongside the official app
+
+Signing in here signs the phone app out, once. Sign the app back in and both keep
+working.
+
+Signing in mints two things: an account session on the main API and a vehicle
+session on the IoV gateway. The account is allowed one current account session,
+so a sign-in anywhere replaces the last one — that is what logs the phone app out
+when this library signs in, and the app does the same to this library when it
+signs back in.
+
+A vehicle session is ended along with the account token that minted it, unless
+that token has since been refreshed. So straight after minting the vehicle
+session, sign-in refreshes the account token once, as the app itself routinely
+does. From then on the phone app signing in cannot reach this library's vehicle
+session, which refreshes itself for as long as it is used.
+
+Versions before 0.3.0b1 skipped that step, so a session they minted was ended by
+the next app sign-in — in Home Assistant, a re-authentication followed by signing
+back in on the phone signed the integration out again. Re-authenticate once on
+0.3.0b1 or later to replace such a session.
 
 ## Charging control
 
@@ -218,6 +257,16 @@ EV brands into Home Assistant and Python, among them:
 Thanks to their authors for showing what a good community integration looks like.
 
 ## Changes
+
+- **0.3.0b1** — two headline changes over the 0.2 line. **Signing in on the phone
+  app and Home Assistant no longer sign each other out:** after minting the vehicle
+  session, sign-in refreshes the account token once (as the app does), so a later
+  app sign-in can no longer end the session — in Home Assistant, re-authenticating
+  and then signing back in on the phone no longer signs the integration out.
+  Signing in here still signs the app out once, and a session from an earlier
+  version needs one re-authentication to benefit. **All 56 regions** the app is
+  configured for are supported (see the b11 note below), with Israel (`IL`)
+  reported working. Also: `FileStore` expands `~`.
 
 - **0.2.0b11** — all 56 regions the app is configured for, read out of the 2.0.25
   Android build rather than guessed: `IL` (Israel) among them, plus `LISTED_REGIONS`

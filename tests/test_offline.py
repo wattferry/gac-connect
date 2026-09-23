@@ -1135,3 +1135,74 @@ def test_default_timezone_is_not_loaded_until_a_charge_window_needs_it():
         zoneinfo.reset_tzpath(list(before))
         sys.meta_path.pop(0)
         zoneinfo.ZoneInfo.clear_cache(only_keys=["Australia/Brisbane"])
+
+
+def test_a_spent_refresh_token_says_what_that_means():
+    """ACCOUNT.0015 on a not-yet-expired token means the chain was advanced elsewhere."""
+    import asyncio
+    import json
+
+    import pytest
+
+    from gac_connect.errors import AuthExpiredError
+
+    http = _FakeHttp(route=_refresh_route(json.dumps({"success": False, "code": "ACCOUNT.0015"}).encode()))
+    c = _client(http, token_valid=False)
+
+    async def go():
+        with pytest.raises(AuthExpiredError) as exc:
+            await c.get_status("VIN")
+        message = str(exc.value)
+        # Both causes, because the code alone does not distinguish them and the fix differs.
+        assert "already used" in message
+        assert "sign-in elsewhere" in message
+
+    asyncio.run(go())
+
+
+def test_file_store_expands_home(tmp_path, monkeypatch):
+    from gac_connect.session import FileStore
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert FileStore("~/.config/gac-connect/session.json")._path == tmp_path / ".config/gac-connect/session.json"
+
+
+
+def _signin_route(account_refresh_ok):
+    import json
+    def route(url):
+        if url.endswith("/iam/sso/login/sec"):
+            body = {"success": True, "data": "TICKET"}
+        elif url.endswith("/gateway/sso/login"):
+            body = {"success": True, "data": {"token": "v1", "refreshToken": "vr1",
+                                              "expireTime": 10**14, "rexpireTime": 10**14}}
+        elif url.endswith("/iam/api/user/token/refresh/sec"):
+            body = ({"success": True, "code": "0000", "data": {"token": "m2", "refreshToken": "mr2"}}
+                    if account_refresh_ok else {"success": False, "code": "4406"})
+        else:
+            raise AssertionError(f"unexpected request {url}")
+        return _FakeResp(body=json.dumps(body).encode())
+    return route
+
+
+def test_sign_in_refreshes_the_account_token_after_minting_the_vehicle_session():
+    """The vehicle session only outlives a later app sign-in once its minting account token is rotated away."""
+    import asyncio
+    http = _FakeHttp(route=_signin_route(account_refresh_ok=True))
+    c = _client(http)
+    c._session.main_token, c._session.main_refresh_token = "m1", "mr1"
+    asyncio.run(c._establish_iov())
+    # order matters: the rotation must come after the vehicle session exists
+    assert [u.split("/gateway", 1)[-1] for u in http.paths] == [
+        "/v1/iam/sso/login/sec", "/sso/login", "/v1/iam/api/user/token/refresh/sec"]
+    assert (c.session.token, c.session.refresh_token) == ("v1", "vr1")
+    assert (c.session.main_token, c.session.main_refresh_token) == ("m2", "mr2")
+
+
+def test_a_failed_account_rotation_keeps_the_signed_in_session():
+    import asyncio
+    http = _FakeHttp(route=_signin_route(account_refresh_ok=False))
+    c = _client(http)
+    c._session.main_token, c._session.main_refresh_token = "m1", "mr1"
+    asyncio.run(c._establish_iov())                      # must not raise
+    assert (c.session.token, c.session.main_token) == ("v1", "m1")
+    assert not c._auth_dead

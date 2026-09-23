@@ -72,7 +72,7 @@ class FileStore:
     """A store backed by a JSON file (used by the CLI). Written 0600."""
 
     def __init__(self, path: str | Path) -> None:
-        self._path = Path(path)
+        self._path = Path(path).expanduser()
 
     async def load(self) -> Session:
         if self._path.exists():
