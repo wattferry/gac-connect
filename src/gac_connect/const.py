@@ -90,14 +90,31 @@ LISTED_REGIONS: Final = frozenset({
 # is listed but untested — reports welcome.
 CONFIRMED_REGIONS: Final = frozenset({"AU", "NZ"})
 
+# A "profile" is a separate national app: its own backend, its own key material,
+# its own main host. Same protocol and endpoints as GAC International, so only the
+# material bundle and the main host differ. The IoV gateway is shared. The default
+# profile is GAC International itself. My AION (UK) is the first separate one; its
+# material lives in a bundle the operator installs locally (see PROFILE_MATERIAL),
+# not shipped in the package.
+PROFILE_MATERIAL: Final[dict[str, str]] = {
+    "intl": "_material.pem",
+    "uk": "_material_uk.pem",
+}
+# region -> profile (anything unlisted is GAC International).
+REGION_PROFILE: Final[dict[str, str]] = {"GB": "uk"}
+# region -> a main-API host that is not the "<prefix>-app-api.gac-international.com"
+# pattern (a separate national app's own host).
+_MAIN_HOST_OVERRIDE: Final[dict[str, str]] = {"GB": "app-api.aionauto.co.uk"}
+
 REGIONS: Final[dict[str, dict[str, str]]] = {
     code: {
-        "main": _MAIN_HOST.format(main),
+        "main": _MAIN_HOST_OVERRIDE.get(code) or _MAIN_HOST.format(main),
         "iov": _IOV_HOST.format("sea-public" if iov == "sea" else iov),
         "tel": tel,
         "tz": tz,
         "listed": code in LISTED_REGIONS,
         "supported": code in CONFIRMED_REGIONS,
+        "profile": REGION_PROFILE.get(code, "intl"),
     }
     for code, (main, iov, tel, tz) in _TABLE.items()
 }

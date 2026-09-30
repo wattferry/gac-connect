@@ -19,3 +19,6 @@ tests/test_compat.py
 tests/live_smoke.py
 tests/close_windows.py
 .DS_Store
+
+# UK (My AION) key material — a separate national app; operator-installed, never shipped
+src/gac_connect/_material_uk.pem

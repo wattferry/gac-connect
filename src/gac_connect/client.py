@@ -49,6 +49,7 @@ from .const import (
     IOV_APP_ID,
     IOV_VERSION,
     MAIN_APP_ID,
+    PROFILE_MATERIAL,
     REGIONS,
     SSO_SERVICE_ID,
     USER_AGENT,
@@ -106,7 +107,9 @@ class GacClient:
             self._zone()      # a zone the caller named is checked now, not at the first window
         self._http = http
         self._store = store or MemoryStore()
-        self._m = material or load_material()
+        # Each profile (GAC International, or a separate national app like My AION UK)
+        # has its own key material; the region picks which bundle to load.
+        self._m = material or load_material(PROFILE_MATERIAL[self._cfg.get("profile", "intl")])
         self._session = Session(region=region)
         self._captcha: Captcha | None = None
         # Every request passes the process-wide limiter; a caller's own limiter (for

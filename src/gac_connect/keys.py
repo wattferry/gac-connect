@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from functools import lru_cache
+from functools import cache
 from importlib import resources
 
 from cryptography.hazmat.primitives import serialization
@@ -54,14 +54,17 @@ def _load_private(pem_block: str) -> Keypair:
     return Keypair(private=key, public=key.public_key())
 
 
-@lru_cache(maxsize=1)
-def load_material() -> Material:
+@cache
+def load_material(bundle: str = _BUNDLE) -> Material:
     try:
-        text = resources.files(__package__).joinpath(_BUNDLE).read_text()
+        text = resources.files(__package__).joinpath(bundle).read_text()
     except (FileNotFoundError, ModuleNotFoundError) as exc:
         raise RuntimeError(
-            f"{_BUNDLE} is missing from the gac_connect package; the library cannot "
-            "reach the gateway without it."
+            f"{bundle} is missing from the gac_connect package; the library cannot "
+            "reach that backend without it."
+            + ("" if bundle == _BUNDLE else
+               " This is a separate national app's material bundle, which is not "
+               "shipped with the package and must be installed locally.")
         ) from exc
 
     blocks = {m.group("name").strip().lower(): m.group("pem") for m in _BLOCK.finditer(text)}
@@ -70,7 +73,7 @@ def load_material() -> Material:
         n for n in ("iov_hmac", "main_hmac", "captcha_key") if n not in meta
     ]
     if missing:
-        raise RuntimeError(f"{_BUNDLE} is incomplete; missing: {', '.join(missing)}")
+        raise RuntimeError(f"{bundle} is incomplete; missing: {', '.join(missing)}")
 
     return Material(
         iov=_load_private(blocks["iov"]),

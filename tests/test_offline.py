@@ -1082,7 +1082,10 @@ def test_region_table():
     assert CONFIRMED_REGIONS <= LISTED_REGIONS <= set(REGIONS)
     for code, cfg in REGIONS.items():
         assert len(code) == 2 and code.isupper()
-        assert cfg["main"].endswith("-app-api.gac-international.com")
+        # GAC International regions use the shared host pattern; a separate national
+        # app (profile != "intl") brings its own main host.
+        if cfg["profile"] == "intl":
+            assert cfg["main"].endswith("-app-api.gac-international.com")
         assert cfg["iov"].endswith("-iov-sdk-access.gac-international.com")
         assert cfg["tel"].startswith("+") and cfg["tel"][1:].isdigit()
         ZoneInfo(cfg["tz"])          # raises if the zone name is wrong
@@ -1206,3 +1209,17 @@ def test_a_failed_account_rotation_keeps_the_signed_in_session():
     asyncio.run(c._establish_iov())                      # must not raise
     assert (c.session.token, c.session.main_token) == ("v1", "m1")
     assert not c._auth_dead
+
+
+def test_uk_profile_selects_its_own_backend():
+    """GB (My AION UK) is a separate profile: own main host, own material, shared IoV."""
+    from gac_connect.const import PROFILE_MATERIAL, REGIONS
+
+    gb = REGIONS["GB"]
+    assert gb["profile"] == "uk"
+    assert gb["main"] == "app-api.aionauto.co.uk"                       # its own backend
+    assert gb["iov"] == "eu-iov-sdk-access.gac-international.com"        # shared IoV gateway
+    assert PROFILE_MATERIAL["uk"] == "_material_uk.pem"                 # operator-installed bundle
+    # An International region is unaffected.
+    assert REGIONS["AU"]["profile"] == "intl"
+    assert REGIONS["AU"]["main"].endswith("gac-international.com")
