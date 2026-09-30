@@ -271,6 +271,13 @@ Thanks to their authors for showing what a good community integration looks like
 
 ## Changes
 
+- **0.4.0b1** — support for markets that run a separate national app on their own
+  backend, via a per-region "profile". The United Kingdom (`GB`) now uses the
+  My AION app on its own host (`app-api.aionauto.co.uk`) with its own key material,
+  while sharing the IoV gateway and the rest of the protocol. The default GAC
+  International build is unchanged (profiles are inert unless their region is
+  selected). UK sign-in is not yet confirmed end to end by a UK user.
+
 - **0.3.0b1** — two headline changes over the 0.2 line. **Signing in on the phone
   app and Home Assistant no longer sign each other out:** after minting the vehicle
   session, sign-in refreshes the account token once (as the app does), so a later
