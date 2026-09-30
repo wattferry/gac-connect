@@ -94,8 +94,8 @@ CONFIRMED_REGIONS: Final = frozenset({"AU", "NZ"})
 # its own main host. Same protocol and endpoints as GAC International, so only the
 # material bundle and the main host differ. The IoV gateway is shared. The default
 # profile is GAC International itself. My AION (UK) is the first separate one; its
-# material lives in a bundle the operator installs locally (see PROFILE_MATERIAL),
-# not shipped in the package.
+# material is in its own bundle (see PROFILE_MATERIAL), shipped with the package
+# like the default one.
 PROFILE_MATERIAL: Final[dict[str, str]] = {
     "intl": "_material.pem",
     "uk": "_material_uk.pem",

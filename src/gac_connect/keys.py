@@ -69,9 +69,6 @@ def load_material(bundle: str = _BUNDLE) -> Material:
         raise RuntimeError(
             f"{bundle} is missing from the gac_connect package; the library cannot "
             "reach that backend without it."
-            + ("" if bundle == _BUNDLE else
-               " This is a separate national app's material bundle, which is not "
-               "shipped with the package and must be installed locally.")
         ) from exc
 
     blocks = {m.group("name").strip().lower(): m.group("pem") for m in _BLOCK.finditer(text)}

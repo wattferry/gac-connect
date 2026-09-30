@@ -42,6 +42,7 @@ packages = ["src/gac_connect"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "src/gac_connect/_material.pem" = "gac_connect/_material.pem"
+"src/gac_connect/_material_uk.pem" = "gac_connect/_material_uk.pem"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
