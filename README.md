@@ -145,9 +145,22 @@ Three tiers, narrowest first:
 - **The rest** — wired into the build ahead of sale. The hosts are right; whether
   there is an account behind them is another matter.
 
-Nothing in the protocol is region-specific — same keys, same signing, same
-endpoints — so a region is only ever the four values above. If one does not work,
-it is worth a report.
+Within the GAC International app nothing is region-specific — same keys, same
+signing, same endpoints — so a region there is only ever the four values above.
+If one does not work, it is worth a report.
+
+Some markets, though, are served by a **separate app on a separate backend with
+its own keys**, which this library cannot sign in to:
+
+- **United Kingdom** — AION Auto UK (`app-api.aionauto.co.uk`) is its own
+  platform. A UK car's account is not on GAC International, so `region="GB"`
+  (which targets GAC International, for any account that *is* there) returns
+  "this mobile phone number is not registered" — a real rejection, not a captcha
+  problem. Confirmed by probe: the UK backend rejects GAC International's request
+  signature (`4407`), so it signs with its own key. Supporting it would need that
+  app's own key material.
+- **Mainland China** — the domestic Aion app is a separate build too; not
+  supported.
 
 The table carries one time zone per country, which is a guess wherever a country
 spans several (RU, BR, MX, ID, AU, ES, PT, CL). Charge windows are set in local
