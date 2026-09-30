@@ -4,6 +4,13 @@ Values live in ``_material.pem`` alongside this module: two labelled PEM private
 keys (``# @iov``, ``# @main``) and three ``# name: value`` constants
 (``iov_hmac``, ``main_hmac``, ``captcha_key``). Public halves are derived at
 import time. A missing bundle raises immediately with a clear message.
+
+A non-default bundle (a separate national app's profile) may omit ``@iov`` and
+``iov_hmac``: confirmed against the live gateway, My AION (UK) ships its own
+main-API material but its IoV traffic is authenticated with GAC International's
+own iov key/hmac, not a national one — the IoV gateway really is shared, keys
+included, not just the host. A bundle missing iov material inherits it from the
+default bundle.
 """
 from __future__ import annotations
 
@@ -69,16 +76,24 @@ def load_material(bundle: str = _BUNDLE) -> Material:
 
     blocks = {m.group("name").strip().lower(): m.group("pem") for m in _BLOCK.finditer(text)}
     meta = {k.lower(): v for k, v in _META.findall(text)}
-    missing = [n for n in ("iov", "main") if n not in blocks] + [
-        n for n in ("iov_hmac", "main_hmac", "captcha_key") if n not in meta
+    missing = [n for n in ("main",) if n not in blocks] + [
+        n for n in ("main_hmac", "captcha_key") if n not in meta
     ]
     if missing:
         raise RuntimeError(f"{bundle} is incomplete; missing: {', '.join(missing)}")
 
+    if "iov" in blocks and "iov_hmac" in meta:
+        iov, iov_hmac = _load_private(blocks["iov"]), meta["iov_hmac"].encode()
+    elif bundle == _BUNDLE:
+        raise RuntimeError(f"{bundle} is incomplete; missing: iov, iov_hmac")
+    else:
+        base = load_material(_BUNDLE)
+        iov, iov_hmac = base.iov, base.iov_hmac
+
     return Material(
-        iov=_load_private(blocks["iov"]),
+        iov=iov,
         main=_load_private(blocks["main"]),
-        iov_hmac=meta["iov_hmac"].encode(),
+        iov_hmac=iov_hmac,
         main_hmac=meta["main_hmac"].encode(),
         captcha_key=meta["captcha_key"].encode(),
     )
