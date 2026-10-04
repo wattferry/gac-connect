@@ -124,6 +124,12 @@ DEFAULT_REGION: Final = "AU"
 APP_VERSION: Final = "2.0.25"
 MAIN_APP_ID: Final = "app-android"
 IOV_APP_ID: Final = "2"
+# IoV subsystem app id, per profile. GAC International runs the IoV subsystem
+# under "2"; a separate national app may run it under its own id. My AION (UK)
+# issues its IoV session under appId "3" (seen in the real app's IoV session
+# JWT), and exchanging a UK ticket under "2" is rejected with "ticket check
+# fail". Anything unlisted falls back to IOV_APP_ID.
+PROFILE_IOV_APP_ID: Final[dict[str, str]] = {"intl": "2", "uk": "3"}
 IOV_VERSION: Final = "v1"
 USER_AGENT: Final = "Dart/3.7 (dart:io)"
 

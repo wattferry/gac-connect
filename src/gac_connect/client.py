@@ -49,6 +49,7 @@ from .const import (
     IOV_APP_ID,
     IOV_VERSION,
     MAIN_APP_ID,
+    PROFILE_IOV_APP_ID,
     PROFILE_MATERIAL,
     REGIONS,
     SSO_SERVICE_ID,
@@ -109,7 +110,10 @@ class GacClient:
         self._store = store or MemoryStore()
         # Each profile (GAC International, or a separate national app like My AION UK)
         # has its own key material; the region picks which bundle to load.
-        self._m = material or load_material(PROFILE_MATERIAL[self._cfg.get("profile", "intl")])
+        profile = self._cfg.get("profile", "intl")
+        self._m = material or load_material(PROFILE_MATERIAL[profile])
+        # The IoV subsystem runs under a per-profile app id (My AION UK uses "3").
+        self._iov_app_id = PROFILE_IOV_APP_ID.get(profile, IOV_APP_ID)
         self._session = Session(region=region)
         self._captcha: Captcha | None = None
         # Every request passes the process-wide limiter; a caller's own limiter (for
@@ -202,7 +206,7 @@ class GacClient:
             "user-agent": USER_AGENT, "fnc-app-type": "android", "locale": "en",
             "fnc-fnc-os-version-type": "2.0.25", "fnc-request-id": _request_id(),
             "content-type": "application/json; charset=utf-8", "fnc-version": IOV_VERSION,
-            "fnc-app-id": IOV_APP_ID, "fnc-timestamp": _now_ms(),
+            "fnc-app-id": self._iov_app_id, "fnc-timestamp": _now_ms(),
             "fnc-icv-timezone": self.timezone,
         }
         if self._session.token:

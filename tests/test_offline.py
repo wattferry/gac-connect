@@ -80,6 +80,10 @@ async def test_client_constructs():
             c = GacClient("AU", http)
             assert c.region == "AU"
             assert c.timezone == "Australia/Brisbane"
+            # IoV subsystem app id is per profile: intl regions run under "2",
+            # the UK (My AION) profile under "3".
+            assert c._iov_app_id == "2"
+            assert GacClient("GB", http)._iov_app_id == "3"
             assert GacClient("GR", http).region == "GR"
             assert GacClient("IL", http).timezone == "Asia/Jerusalem"
             # a country spanning several zones can be told which one the car is in
