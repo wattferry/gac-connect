@@ -271,6 +271,12 @@ Thanks to their authors for showing what a good community integration looks like
 
 ## Changes
 
+- **0.4.0b4** — UK (`GB`) sign-in now carries through the IoV session exchange:
+  the UK profile presents its own app id on the IoV calls and decrypts the IoV
+  session response (and push messages) with its own response key, while still
+  using the shared iov key for the request it sends. Other regions are unchanged.
+  Awaiting end-to-end confirmation from a UK user.
+
 - **0.4.0b1** — support for markets that run a separate national app on their own
   backend, via a per-region "profile". The United Kingdom (`GB`) now uses the
   My AION app on its own host (`app-api.aionauto.co.uk`) with its own key material,

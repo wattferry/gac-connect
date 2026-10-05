@@ -6,11 +6,14 @@ keys (``# @iov``, ``# @main``) and three ``# name: value`` constants
 import time. A missing bundle raises immediately with a clear message.
 
 A non-default bundle (a separate national app's profile) may omit ``@iov`` and
-``iov_hmac``: confirmed against the live gateway, My AION (UK) ships its own
-main-API material but its IoV traffic is authenticated with GAC International's
-own iov key/hmac, not a national one — the IoV gateway really is shared, keys
-included, not just the host. A bundle missing iov material inherits it from the
-default bundle.
+``iov_hmac``: My AION (UK) ships its own main-API material but signs and encrypts
+its IoV requests with GAC International's iov key/hmac, so a bundle missing iov
+material inherits it from the default bundle.
+
+A profile whose IoV responses come back under a different keypair can ship an
+``@iov_response`` block; that keypair decrypts its IoV responses and push
+messages, while ``iov``/``iov_hmac`` still cover the request it sends. When the
+block is absent, responses decrypt with ``iov`` (the usual case).
 """
 from __future__ import annotations
 
@@ -52,6 +55,11 @@ class Material:
     iov_hmac: bytes
     main_hmac: bytes
     captcha_key: bytes
+    # Keypair the gateway encrypts IoV responses (and push messages) to. Usually
+    # the same as ``iov``; a profile whose IoV responses come back under a
+    # different keypair ships its own ``@iov_response`` block, while still using
+    # ``iov``/``iov_hmac`` for the request it sends.
+    iov_response: Keypair = None  # type: ignore[assignment]  # set in load_material
 
 
 def _load_private(pem_block: str) -> Keypair:
@@ -87,10 +95,15 @@ def load_material(bundle: str = _BUNDLE) -> Material:
         base = load_material(_BUNDLE)
         iov, iov_hmac = base.iov, base.iov_hmac
 
+    # Responses (and push messages) decrypt with ``iov`` unless the bundle ships a
+    # separate response keypair.
+    iov_response = _load_private(blocks["iov_response"]) if "iov_response" in blocks else iov
+
     return Material(
         iov=iov,
         main=_load_private(blocks["main"]),
         iov_hmac=iov_hmac,
         main_hmac=meta["main_hmac"].encode(),
         captcha_key=meta["captcha_key"].encode(),
+        iov_response=iov_response,
     )

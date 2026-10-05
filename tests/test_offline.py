@@ -15,6 +15,28 @@ def test_imports():
     from gac_connect import client, commands, models, vehicle, auth, session  # noqa: F401
 
 
+def test_iov_response_keypair():
+    """intl decrypts responses with its iov key; the UK profile decrypts them with
+    its own response keypair, while still inheriting intl's iov key for requests."""
+    from gac_connect.crypto import decrypt_envelope, encrypt_envelope
+    from gac_connect.keys import load_material
+    try:
+        intl = load_material("_material.pem")
+        uk = load_material("_material_uk.pem")
+    except RuntimeError as exc:
+        pytest.skip(str(exc))
+    # Default profile: one keypair both ways.
+    assert intl.iov_response is intl.iov
+    # UK: request key inherited from intl, response key is its own and distinct.
+    assert uk.iov.public_pem == intl.iov.public_pem
+    assert uk.iov_response.public_pem != uk.iov.public_pem
+    # A response encrypted to the UK response key opens with it, and not with the
+    # inherited request key (the failure mode this fixes).
+    wrapper, _, _ = encrypt_envelope({"ok": True}, uk.iov_response.public)
+    assert decrypt_envelope(wrapper, uk.iov_response.private) == {"ok": True}
+    assert decrypt_envelope(wrapper, uk.iov.private) is None
+
+
 def test_status_decoding():
     from gac_connect.models import ChargingMode, VehicleStatus
     results = {
