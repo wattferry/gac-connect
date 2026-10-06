@@ -19,3 +19,7 @@ tests/test_compat.py
 tests/live_smoke.py
 tests/close_windows.py
 .DS_Store
+
+# Local app package archives; never ship these
+*.xapk
+*.apk

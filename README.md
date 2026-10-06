@@ -149,16 +149,17 @@ Within the GAC International app nothing is region-specific — same keys, same
 signing, same endpoints — so a region there is only ever the four values above.
 If one does not work, it is worth a report.
 
-Some markets, though, are served by a **separate app on a separate backend with
-its own keys**, which this library cannot sign in to:
+Some markets are served by a **separate app on a separate backend with its own
+keys**. The library reaches them through a per-region "profile" (see
+`PROFILE_MATERIAL` in `const.py`):
 
 - **United Kingdom** — AION Auto UK (`app-api.aionauto.co.uk`) is its own
-  platform. A UK car's account is not on GAC International, so `region="GB"`
-  (which targets GAC International, for any account that *is* there) returns
-  "this mobile phone number is not registered" — a real rejection, not a captcha
-  problem. Confirmed by probe: the UK backend rejects GAC International's request
-  signature (`4407`), so it signs with its own key. Supporting it would need that
-  app's own key material.
+  platform, served by the My AION app with its own key material and its own IoV
+  app id (3). `region="GB"` selects that profile: it
+  targets `app-api.aionauto.co.uk`, signs IoV requests with the My AION HMAC
+  secret, encrypts them with the My AION request key, and decrypts responses
+  with the My AION response key. UK sign-in is still awaiting end-to-end
+  confirmation from a UK user.
 - **Mainland China** — the domestic Aion app is a separate build too; not
   supported.
 
@@ -271,10 +272,18 @@ Thanks to their authors for showing what a good community integration looks like
 
 ## Changes
 
+- **0.4.0b5** — UK (`GB`) IoV crypto is now entirely its own, not GAC
+  International's. The shared IoV gateway validates the signature per app id, and
+  GB runs under its own IoV app id (3, vs. intl's 2), so after the app id fix in
+  0.4.0b3 the previously-working shared signing key started failing with
+  `sign match fail`. The UK profile now uses its own IoV signing secret and its
+  own IoV request keypair, so the request is no longer signed or encrypted with
+  the shared intl material. Other regions are unchanged.
+
 - **0.4.0b4** — UK (`GB`) sign-in now carries through the IoV session exchange:
   the UK profile presents its own app id on the IoV calls and decrypts the IoV
-  session response (and push messages) with its own response key, while still
-  using the shared iov key for the request it sends. Other regions are unchanged.
+  session response (and push messages) with its own response key, and encrypts
+  the request it sends with its own request key. Other regions are unchanged.
   Awaiting end-to-end confirmation from a UK user.
 
 - **0.4.0b1** — support for markets that run a separate national app on their own

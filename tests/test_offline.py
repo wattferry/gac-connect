@@ -17,7 +17,7 @@ def test_imports():
 
 def test_iov_response_keypair():
     """intl decrypts responses with its iov key; the UK profile decrypts them with
-    its own response keypair, while still inheriting intl's iov key for requests."""
+    its own response keypair, while encrypting requests with its own iov key."""
     from gac_connect.crypto import decrypt_envelope, encrypt_envelope
     from gac_connect.keys import load_material
     try:
@@ -27,14 +27,54 @@ def test_iov_response_keypair():
         pytest.skip(str(exc))
     # Default profile: one keypair both ways.
     assert intl.iov_response is intl.iov
-    # UK: request key inherited from intl, response key is its own and distinct.
-    assert uk.iov.public_pem == intl.iov.public_pem
+    # UK: request and response keys are both UK-specific and distinct.
+    assert uk.iov.public_pem != intl.iov.public_pem
     assert uk.iov_response.public_pem != uk.iov.public_pem
     # A response encrypted to the UK response key opens with it, and not with the
-    # inherited request key (the failure mode this fixes).
+    # UK request key (the two are distinct keypairs).
     wrapper, _, _ = encrypt_envelope({"ok": True}, uk.iov_response.public)
     assert decrypt_envelope(wrapper, uk.iov_response.private) == {"ok": True}
     assert decrypt_envelope(wrapper, uk.iov.private) is None
+
+
+def test_uk_has_its_own_iov_hmac():
+    """UK signs IoV requests with its own HMAC secret, not GAC International's:
+    the shared gateway validates the signature per the IoV app id (GB runs
+    under app id 3, intl under 2), so the two apps' signing secrets and request
+    keypairs both differ."""
+    from gac_connect.keys import load_material
+    try:
+        intl = load_material("_material.pem")
+        uk = load_material("_material_uk.pem")
+    except RuntimeError as exc:
+        pytest.skip(str(exc))
+    assert uk.iov_hmac != intl.iov_hmac
+    assert uk.iov_hmac == b"uk-intl-pro"
+    # The UK app also encrypts the request body with its own iov keypair.
+    assert uk.iov.public_pem != intl.iov.public_pem
+
+
+def test_uk_iov_keypair_fingerprints():
+    """Pin the UK IoV keypairs by SPKI fingerprint, so a future bundle edit can't
+    silently fall back to inheriting GAC International's iov key."""
+    import hashlib
+
+    from cryptography.hazmat.primitives import serialization
+    from gac_connect.keys import load_material
+
+    def spki(keypair) -> str:
+        der = keypair.public.public_bytes(
+            serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+        )
+        return hashlib.sha256(der).hexdigest()
+
+    try:
+        uk = load_material("_material_uk.pem")
+    except RuntimeError as exc:
+        pytest.skip(str(exc))
+    assert spki(uk.iov) == "199a8aeab8f6bdcf4a162ba52e4a89d261239786b7dd874956009dd899b8edb2"
+    assert spki(uk.iov_response) == "bc502d7565e9e55a901d15c5516d52adf5d9570f592fdc62fa7eee5a536ba098"
+    assert uk.iov_hmac == b"uk-intl-pro"
 
 
 def test_status_decoding():

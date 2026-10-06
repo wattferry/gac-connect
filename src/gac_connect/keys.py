@@ -5,10 +5,14 @@ keys (``# @iov``, ``# @main``) and three ``# name: value`` constants
 (``iov_hmac``, ``main_hmac``, ``captcha_key``). Public halves are derived at
 import time. A missing bundle raises immediately with a clear message.
 
-A non-default bundle (a separate national app's profile) may omit ``@iov`` and
-``iov_hmac``: My AION (UK) ships its own main-API material but signs and encrypts
-its IoV requests with GAC International's iov key/hmac, so a bundle missing iov
-material inherits it from the default bundle.
+A non-default bundle (a separate national app's profile) may omit ``@iov`` and/or
+``iov_hmac`` independently: each one missing is inherited from the default bundle.
+My AION (UK) ships its own material throughout: its own main-API keypair and
+``main_hmac``, its own IoV request keypair (``@iov``) and ``iov_hmac`` (the UK
+app's own HMAC secret), and its own IoV response keypair (``@iov_response``) —
+sharing only the captcha key and the IoV gateway host with GAC International.
+The IoV gateway validates the signature per app id, and the UK IoV subsystem
+runs under its own app id (see ``PROFILE_IOV_APP_ID`` in ``const.py``).
 
 A profile whose IoV responses come back under a different keypair can ship an
 ``@iov_response`` block; that keypair decrypts its IoV responses and push
@@ -87,13 +91,17 @@ def load_material(bundle: str = _BUNDLE) -> Material:
     if missing:
         raise RuntimeError(f"{bundle} is incomplete; missing: {', '.join(missing)}")
 
-    if "iov" in blocks and "iov_hmac" in meta:
+    if bundle == _BUNDLE:
+        if "iov" not in blocks or "iov_hmac" not in meta:
+            raise RuntimeError(f"{bundle} is incomplete; missing: iov, iov_hmac")
         iov, iov_hmac = _load_private(blocks["iov"]), meta["iov_hmac"].encode()
-    elif bundle == _BUNDLE:
-        raise RuntimeError(f"{bundle} is incomplete; missing: iov, iov_hmac")
     else:
+        # Each half may be overridden independently; whichever is absent is
+        # inherited from the default bundle. See the module docstring: My AION
+        # (UK) ships its own iov keypair and HMAC secret.
         base = load_material(_BUNDLE)
-        iov, iov_hmac = base.iov, base.iov_hmac
+        iov = _load_private(blocks["iov"]) if "iov" in blocks else base.iov
+        iov_hmac = meta["iov_hmac"].encode() if "iov_hmac" in meta else base.iov_hmac
 
     # Responses (and push messages) decrypt with ``iov`` unless the bundle ships a
     # separate response keypair.
