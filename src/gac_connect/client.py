@@ -93,10 +93,10 @@ from .signing import IOV_FIELDS, MAIN_FIELDS, sign
 # store) never spend the same single-use refresh token twice.
 _REFRESH_GATE = threading.Lock()
 _LOGGER = logging.getLogger(__name__)
-# Account-API codes on which GAC 2.0.32 (response interceptor 0xdbe2c0) leaves the account:
-# 4402 and 4421 sign out (an expired token, which a refresh may still mend); 4423 opens the
-# sign-in page with GAC's "kickMessage" (the account signed in on another phone). A refresh
-# after 4423 could take the session back from the app, so it is not tried.
+# Account-API codes that end the account session: 4402 and 4421 mean an expired token,
+# which a refresh may still mend; 4423 comes with GAC's "kickMessage" (the account signed in
+# on another phone). A refresh after 4423 could take the session back from that phone, so
+# it is not tried.
 ACCOUNT_TOKEN_EXPIRED = frozenset({"4402", "4421"})
 ACCOUNT_SIGNED_IN_ELSEWHERE = "4423"
 ACCOUNT_SESSION_ENDED = ACCOUNT_TOKEN_EXPIRED | {ACCOUNT_SIGNED_IN_ELSEWHERE}
@@ -470,8 +470,8 @@ class GacClient:
     async def _account_call(self, path: str, body: Any) -> Any:
         """An account-API call; an expired account token is refreshed once and the call repeated.
 
-        GAC 2.0.32 signs out on 4402 and 4421 from these calls. Only the account session
-        has run out then; the vehicle session it minted keeps working. 4423 (signed in on
+        4402 and 4421 from these calls mean only the account session has run out; the
+        vehicle session it minted keeps working. 4423 (signed in on
         another phone) is returned as it is, never refreshed.
         """
         resp = await self._main_call(path, body, authorization=self._session.main_token)
@@ -600,11 +600,11 @@ class GacClient:
         return [v for v in vehicles if isinstance(v.vin, str) and v.vin.strip()]
 
     async def get_alarms(self, vin: str, *, page: int = 1, page_size: int = 20) -> dict:
-        """One page of the car's alert history (GAC 2.0.32 ``alarm/page``, account API).
+        """One page of the car's alert history (``alarm/page``, account API).
 
         The page has ``list`` items with ``alarmId``, ``vin``, ``createTime``, ``alarmType`` and
         ``alarmContent``: a JSON string holding ``alarmStatus[{alarmSource, alarms[{alarmObject,
-        alarmReason}]}]``, which the app turns into a title (charging finished, a living being
+        alarmReason}]}]`` that names the alert (charging finished, a living being
         left in the car, 12 V battery low and so on).
         """
         body = {"pageNo": page, "pageSize": page_size, "order": "", "sort": "", "vin": vin}
@@ -623,7 +623,7 @@ class GacClient:
         return data
 
     async def get_departure_plans(self, vin: str, *, version: str | None = None) -> Any:
-        """The car's saved departure plans (GAC 2.0.32 one-click setout, new generation).
+        """The car's saved departure plans (one-click setout, the newer list of several plans).
 
         Each plan has ``customFeatureId``, ``configName``, ``leaveTime`` (seconds of the day),
         ``weeklyReservation``, ``active`` and ``content`` (climate, seats, steering wheel,
@@ -639,7 +639,7 @@ class GacClient:
         return data
 
     async def get_standby_config(self, vin: str, *, default: bool = False) -> Any:
-        """The older single "One-click standby" setting (GAC 2.0.32 ``user/oks/config/query``),
+        """The older single "One-click standby" setting (``user/oks/config/query``),
         or with ``default`` the default plan (``default/config/query``).
 
         Its reply has ``customFeatureId``, ``active``, ``type``, ``version`` and ``content``
@@ -694,9 +694,9 @@ class GacClient:
         )
         data = self._data(resp)
         code = resp.get("code") if isinstance(resp, dict) else None
-        # The app's generic read wrapper accepts "0" and other normal success
-        # codes, without requiring the main API's success boolean. Keep async
-        # command-only codes out of this metadata read and do not broaden _ok.
+        # This read succeeds on "0" and the other normal success codes, with or
+        # without the main API's success boolean. Keep async command-only codes
+        # out of this metadata read and do not broaden _ok.
         success_code = type(code) in (int, str) and str(code) in SUCCESS_RESULT_CODES
         if (not isinstance(resp, dict) or resp.get("success") is False
                 or not (success_code or (code is None and self._ok(resp)))):
@@ -722,7 +722,7 @@ class GacClient:
 
         Returns None while the command is still executing (13001), else the answer as a
         ``PushResult``: the reply carries a push message's fields (identifier, updateTime,
-        results), as the GAC 2.0.32 app reads it when push is unavailable.
+        results).
         """
         # Push results and polled ones read alike.
         from .push import interpret, normalize_id
@@ -832,8 +832,8 @@ class GacClient:
         """Toggle ventilation without changing seat heating or cabin settings.
 
         Seat IDs follow the app: 1 driver, 2 front passenger, 3 rear left,
-        4 rear right. Only use seats fitted with ventilation. The app's binary
-        controls send windStrength 1 for on and 0 for off, both with enableWind 1.
+        4 rear right. Only use seats fitted with ventilation. On sends windStrength 1
+        and off sends 0, both with enableWind 1.
         An accepted request still needs a result or a fresh vehicle report.
         """
         if type(seat) is not int or seat not in (1, 2, 3, 4):

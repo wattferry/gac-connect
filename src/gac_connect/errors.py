@@ -55,7 +55,7 @@ class RepeatRequestError(GacError):
     """The gateway rejected a duplicate request; retry with a fresh request id."""
 
 
-# Command result codes named by the GAC 2.0.32 app (wording is this library's own).
+# Command result codes and what they mean (the wording is this library's own).
 # 13000 executed and 13001 executing are successes; 13007 (partial success) is left unnamed.
 RESULT_REASONS: dict[str, str] = {
     "11018": "the remote-control PIN is incorrect",

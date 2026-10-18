@@ -1,4 +1,4 @@
-"""Seat controls use the request format traced in GAC Android 2.0.32."""
+"""Seat ventilation sends enableWind 1 with a strength and leaves temperature fields out."""
 import asyncio
 from unittest.mock import AsyncMock
 

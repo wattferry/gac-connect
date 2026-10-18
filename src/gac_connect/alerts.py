@@ -1,8 +1,8 @@
 """Car alerts from GAC's alert list (``GacClient.get_alarms``, the app's "Vehicle alarm" page).
 
-Each record names an alert by ``alarmSource``/``alarmObject``/``alarmReason``; the app turns
-that triple into a title (GAC 2.0.32 function 0x70efe4). Titles here are this library's own
-English wording. A record can list several alerts; like the app, the last one is used.
+Each record names an alert by ``alarmSource``/``alarmObject``/``alarmReason``, and that
+triple selects its title. Titles here are this library's own English wording. A record can
+list several alerts; the last one names the record.
 """
 from __future__ import annotations
 

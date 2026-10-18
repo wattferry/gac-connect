@@ -7,7 +7,7 @@ from typing import Final
 # Main account API and the IoV vehicle gateway are two separate backends with
 # two separate crypto profiles.
 IOV_PREFIX: Final = "/iov-vehicle-gateway/v1/platform/vehicle/access_gateway"
-# The app's way to read a command result without the push feed (GAC 2.0.32); note /iov/, not /platform/.
+# Reads a command's result without the push feed; note /iov/, not /platform/.
 IOV_POLL_RESULT: Final = "/iov-vehicle-gateway/v1/iov/vehicle/access_gateway/poll_access_response"
 
 # Both hosts are built from a per-country prefix, so the table holds prefixes
@@ -181,7 +181,7 @@ SERVICE_CLOCK: Final = timezone(timedelta(hours=8))
 # Gateway result codes.
 CODE_OK: Final = "0000"
 CODE_COMMAND_ACCEPTED: Final = 13001      # async command queued ("ongoing") — success
-# The app's common response-success predicate (GAC 2.0.32) accepts these codes.
+# Codes that mark a reply as successful.
 SUCCESS_RESULT_CODES: Final = frozenset({"0", "0000", "1000", "2000", "13000"})
 CODE_COMMAND_MALFORMED: Final = 13101
 CODE_UNSUPPORTED_VALUE: Final = 13002     # "not supported", e.g. an Aion UT refusing remote fan speeds 8–10

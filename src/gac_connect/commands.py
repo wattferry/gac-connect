@@ -60,9 +60,9 @@ CATALOG: dict[str, Command] = {c.name: c for c in [
     Command("aircon-temperature", _p("air_condition/open"), "air-adjust", category="climate",
             description="adjust running A/C temperature without requesting Auto",
             ops={"temperature": 24.0, "temperatureUnit": 0}),
-    # GAC 2.0.32 sterilisation (hot-air antivirus), as the app's dispatcher 0x81cefc sends it:
-    # a flat body with grade 2 and a 30-minute run. Off ({"vin"}) stopped an app-started run
-    # on an Aion UT; the car then reports airConditionAntivirusMode 0.
+    # Sterilisation (hot-air antivirus) on is a flat body with grade 2 and a 30-minute run.
+    # Off ({"vin"}) stopped an app-started run on an Aion UT; the car then reports
+    # airConditionAntivirusMode 0.
     Command("antivirus-on", _p("control_air_condition_antivirus/on"), "flat", category="climate",
             description="cabin sterilisation on", ops={"grade": 2, "duration": 30}),
     Command("antivirus-off", _p("control_air_condition_antivirus/off"), "flat", category="climate",
@@ -91,7 +91,7 @@ CATALOG: dict[str, Command] = {c.name: c for c in [
     Command("horn-off", _p("horn/off"), "flat", category="body", description="horn off"),
     # charging & power
     Command("charge-schedule", _p("charging/reservation"), "ops", stable=True, category="charge", description="set charge schedule"),
-    # GAC 2.0.32 sends it like door unlock, with only the VIN, after a confirmation (no PIN).
+    # Sent like door unlock: only the VIN, no PIN.
     Command("charger-unlock", _p("charger/unlock"), "flat", category="charge",
             description="unlock the charging connector (no PIN required)"),
     Command("battery-precondition", _p("battery/pretreatment"), "ops", category="charge",
@@ -102,12 +102,12 @@ CATALOG: dict[str, Command] = {c.name: c for c in [
             description="cancel battery preconditioning", ops={"batteryPretreatmentMode": 0}),
     Command("power-on", _p("engine/start"), "flat", pin=True, category="power", description="remote power on (PIN)"),
     Command("power-off", _p("engine/stop"), "flat", pin=True, category="power", description="remote power off (PIN)"),
-    # The app's vehicle-shutdown branch is separate from its engine start/stop commands.
+    # Vehicle shutdown is its own path, separate from engine start/stop.
     Command("vehicle-power-off", _p("power/off"), "flat", category="power",
-            description="vehicle shutdown (GAC 2.0.32)"),
+            description="vehicle shutdown"),
     # HTTP 404 on the SEA gateway (Aion UT, Thailand): Power Hold is stopped from the console.
     Command("powerkeep-stop", _p("stop/powerKeep"), "flat", category="power", description="stop power-keep"),
-    # GAC 2.0.32 selects ventilation with enableWind=1; strength 0 switches it off.
+    # enableWind=1 selects ventilation; strength 0 switches it off.
     # Leave temperature fields absent so a seat command does not change cabin A/C.
     *(Command(f"seat-{seat}-ventilation-{direction}", _p("control_seat_temperature"), "seat",
               category="climate", description=f"seat {seat} ventilation {direction}",
@@ -115,10 +115,9 @@ CATALOG: dict[str, Command] = {c.name: c for c in [
       for seat in range(1, 5) for direction, strength in (("on", 1), ("off", 0))),
 ]}
 
-# What the GAC 2.0.32 app lists when the car refuses a command with 13005 ("conditions
-# not met"), chosen by its control type; the wording is this library's own. The app has
-# no specific list for charging, sunroof, steering heat or fridge commands, and leaves
-# out the range for A/C on in fuel cars.
+# The conditions the GAC app lists when the car refuses a command with 13005 ("conditions
+# not met"); the wording is this library's own. The app lists none for charging, sunroof,
+# steering heat or fridge commands, and leaves out the range for A/C on in fuel cars.
 _STILL = "the car is not moving"
 _OFF = "the car is not moving and is switched off"
 _LOCKED = "the car is locked"

@@ -488,7 +488,7 @@ class VehicleStatus:
             return False if modes and all(mode == 0 for mode in modes) else None
 
         def brake_fluid_low() -> bool | None:
-            """The app's brake-fluid check reads only brakeAccessors[].alarms; a positive reason is an alarm."""
+            """Brake fluid is reported only in brakeAccessors[].alarms; a positive reason is an alarm."""
             items = [i for i in _items(results, "brakeAccessors") if isinstance(i, dict)]
             lists = [i.get("alarms") for i in items if isinstance(i.get("alarms"), list)]
             if not lists:
