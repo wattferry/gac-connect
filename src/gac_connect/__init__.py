@@ -5,8 +5,10 @@ own, on your own account.
 """
 from __future__ import annotations
 
-from .client import command_session_id
+from .capabilities import Capabilities, Support, equipment_from_capabilities, ranges_from_capabilities
+from .client import GacClient, command_session_id
 from .errors import (
+    AccountSessionEnded,
     AuthError,
     AuthExpiredError,
     CaptchaError,
@@ -16,13 +18,34 @@ from .errors import (
     PinRequiredError,
     RateLimitedError,
     RegionError,
+    ResponseError,
 )
 from .limits import DEFAULT_LIMITER, Limiter
+from .models import VehicleStatus, doors_locked, restart_needed
+from .phone import local_mobile
 from .push import BrokerInfo, PushClient, PushResult, interpret
+from .vehicle import validate_clock, validate_weekly, window_operation
 
-__version__ = "0.4.0b6"
+# Public decoding entry point for consumers; use the same implementation as
+# GacClient.get_status, without a second normalization pass or client subclass.
+decode_status = VehicleStatus.from_results
+
+__version__ = "0.5.0"
 
 __all__ = [
+    "GacClient",
+    "Capabilities",
+    "Support",
+    "equipment_from_capabilities",
+    "ranges_from_capabilities",
+    "VehicleStatus",
+    "decode_status",
+    "doors_locked",
+    "restart_needed",
+    "local_mobile",
+    "validate_clock",
+    "validate_weekly",
+    "window_operation",
     "AuthError",
     "DEFAULT_LIMITER",
     "Limiter",
@@ -38,6 +61,8 @@ __all__ = [
     "PinRequiredError",
     "RateLimitedError",
     "RegionError",
+    "ResponseError",
+    "AccountSessionEnded",
     "__version__",
     "command_session_id",
 ]

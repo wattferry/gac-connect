@@ -5,12 +5,21 @@ lists. This module folds the useful ones into a flat, typed :class:`VehicleStatu
 with the gateway's quirks resolved:
 
 * SoC is reported 0..1, exposed as a percentage;
-* a charging current of 1638.0 is the gateway's "unknown" placeholder → None;
+* a charging current of 1638.0 or more is the gateway's "unknown" placeholder
+  (0x3FFF × 0.1 = 1638.3) → None;
+* an odometer of 0 is a placeholder, not a reading → None;
 * tyre pressure stays in native kPa (let the consumer convert to psi if it wants);
 * lock uses the gateway's inverted polarity (0 = locked), decoded to a bool;
 * openMode 0 = closed, >0 = open, negative = unknown;
 * the A/C is "on" when the compressor flag is set or the fan is running;
-* reservation times are milliseconds-of-day on the service's clock, exposed as "HH:MM".
+* powerMode 0 = off, 1 = on while stationary and 2 = on (driving, or Power Hold), verified
+  with Aion UT reports; other codes stay unknown;
+* current, charge time, range, cabin temperature and openings whose ``…Flag``
+  companion is explicitly 0/false are not valid → None (a missing flag counts as valid);
+* chargingMode follows the app: 0 immediately, 1 once, 2 loop;
+* reservations can use calendar fields, Unix milliseconds, or milliseconds-of-day;
+  explicit calendar fields take precedence; Unix milliseconds encode the calendar
+  clock on the service clock (UTC+8), whatever the reported time zone.
 
 The raw ``results`` dict is retained on ``.raw`` so anything not modelled here is
 still reachable.
@@ -19,8 +28,11 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import IntEnum
 from typing import Any
+
+from .const import SERVICE_CLOCK
 
 
 class ChargingStatus(IntEnum):
@@ -30,20 +42,27 @@ class ChargingStatus(IntEnum):
 
 
 class ChargingMode(IntEnum):
-    FREE = 0        # charge whenever plugged in
-    SCHEDULED = 1   # only inside the reservation window
+    FREE = 0        # charge whenever plugged in (the app's "immediately")
+    SCHEDULED = 1   # only inside the reservation window (the app's "once")
+    LOOP = 2        # inside the window on the selected days (the app's "loop")
     UNKNOWN = -1
+
+    @property
+    def scheduled(self) -> bool:
+        return self in (ChargingMode.SCHEDULED, ChargingMode.LOOP)
 
 
 _MAX_CHARGE_MINUTES = 7 * 24 * 60   # maximum accepted charge duration
 
 
 def _num(v: Any) -> float | None:
+    if isinstance(v, bool):
+        return None
     try:
         f = float(v)
     except (TypeError, ValueError, OverflowError):
         return None
-    return f
+    return f if math.isfinite(f) else None
 
 
 def _finite(v: Any) -> float | None:
@@ -61,21 +80,187 @@ def _exact_int(v: Any) -> int | None:
 
 
 def _first(res: dict, key: str) -> dict:
-    v = res.get(key) or [{}]
-    return v[0] if v else {}
+    items = res.get(key)
+    return items[0] if isinstance(items, list) and items and isinstance(items[0], dict) else {}
 
 
-def _is_open(v: Any) -> bool:
-    return (_num(v) or 0) > 0
+def _items(res: dict, key: str) -> list:
+    items = res.get(key)
+    return items if isinstance(items, list) else []
+
+
+# Door and window numbers by position, as an Aion UT reports them; the same on a
+# right-hand-drive car (its driver's door and window are number 2).
+POSITIONS = {1: "front_left", 2: "front_right", 3: "rear_left", 4: "rear_right"}
+# lightAccessors light numbers seen on an Aion UT. Either turn indicator and the hazard lights
+# all report as light 6; light 7 is the brake lights (on with the pedal pressed, 2026-10-17).
+LIGHTS = {2: "headlights", 3: "high_beam", 5: "rear_fog", 6: "turn_signal", 7: "brake_lights"}
+
+
+def _numbered(res: dict, key: str, id_key: str, number: int) -> dict | None:
+    return next((item for item in _items(res, key)
+                 if isinstance(item, dict) and _exact_int(item.get(id_key)) == number), None)
+
+
+def _opened(item: dict | None) -> bool | None:
+    """One door's or window's openMode: positive is open, 0 closed; flagged-invalid is unknown."""
+    if item is None or not _not_invalid(item, "openModeFlag"):
+        return None
+    mode = _exact_int(item.get("openMode"))
+    return None if mode is None or mode < 0 else mode > 0
+
+
+def _light_on(item: dict | None) -> bool | None:
+    # An Aion UT reports -1 rather than 0 while a light is off, so -1 reads as off.
+    return {1: True, 0: False, -1: False}.get(_exact_int(item.get("open"))) if item else None
+
+
+def _decode_door_locks(doors: Any, model: str | None = None) -> bool | None:
+    if not isinstance(doors, list) or not doors:
+        return None
+    codes = [_exact_int(door.get("lock")) if isinstance(door, dict) else None for door in doors]
+    if 1 in codes:
+        return False        # any one door unlocked is enough to say so
+    # Locked needs every door: the four door numbers, each once (every GAC model has four).
+    numbers = [door.get("door") if isinstance(door, dict) else None for door in doors]
+    if len(doors) != 4 or any(type(n) is not int for n in numbers) or set(numbers) != {1, 2, 3, 4}:
+        return None
+    if all(code == 0 for code in codes):
+        return True
+    # Verified UT reports keep rear locks at -1 while the front locks change.
+    # Require an explicitly selected UT model for that pattern.
+    model_name = (model or "").strip().casefold()
+    if model_name == "aion ut" or model_name.startswith("aion ut "):
+        by_door = dict(zip(numbers, codes, strict=True))
+        if by_door == {1: 0, 2: 0, 3: -1, 4: -1}:
+            return True
+    return None
+
+
+def doors_locked(status: VehicleStatus | None, model: str | None = None) -> bool | None:
+    """Interpret lock readings with optional, explicitly selected model knowledge.
+
+    Unknown or partial reports stay unknown. The verified Aion UT rear-lock
+    sentinel is accepted only for that model and the complete four-door pattern.
+    """
+    return None if status is None else _decode_door_locks(status.raw.get("doorAccessors"), model)
+
+
+def restart_needed(status: VehicleStatus | None) -> bool:
+    """Whether the car, plugged in, has ended its charge and will not start another by itself.
+
+    Switching the schedule off does not start a new charge; plugging in, the supply coming on
+    or a window's start does. An Aion UT (2026-10-17) reported chargingStatus 4 after a
+    one-time window ended, then once mode with no window (the app's "Charging time is not
+    set"), and 0 then 23 after the connector was unlocked with the cable left in: with the
+    schedule off it did not charge again, and a one-time window starting in a minute
+    (``restart_operation``) charged in both cases. A repeating schedule is never counted, as a
+    restart would replace it, nor the supply being off (1, 7).
+    """
+    if status is None or status.plugged_in is not True or status.charging is True:
+        return False
+    if status.charging_mode not in (ChargingMode.FREE, ChargingMode.SCHEDULED):
+        return False
+    not_set = (status.charging_mode is ChargingMode.SCHEDULED and status.charge_window_start is None
+               and status.charge_window_stop is None)
+    return status.charge_ended is True or not_set
+
+
+def _enabled(item: dict, flag: str) -> bool:
+    value = item.get(flag, True)
+    return value if isinstance(value, bool) else _exact_int(value) == 1
+
+
+def _not_invalid(item: dict, flag: str) -> bool:
+    """False only for an explicit 0/false validity flag; other or missing values do not hide a reading."""
+    value = item.get(flag)
+    return value is not False and not (type(value) in (int, float) and value == 0)
+
+
+def _bounded(value: Any, low: float, high: float = math.inf) -> float | None:
+    number = _num(value)
+    return number if number is not None and low <= number <= high else None
+
+
+# Times of day run past 24 h for a stop after midnight (00:10 as 24:10); Unix-ms
+# reservation times are far larger.
+_TIME_OF_DAY_MS = 2 * 86_400_000
 
 
 def _hhmm(ms: Any) -> str | None:
-    """Milliseconds-of-day -> "HH:MM"; None outside 0 <= ms < 24 h."""
+    """Milliseconds-of-day -> "HH:MM", a stop past midnight included; None otherwise."""
     v = _num(ms)
-    if v is None or not 0 <= v < 86_400_000:
+    if v is None or not 0 <= v < _TIME_OF_DAY_MS:
         return None
-    minutes = int(v) // 60000
+    minutes = int(v) // 60000 % (24 * 60)
     return f"{minutes // 60:02d}:{minutes % 60:02d}"
+
+
+def _calendar_clock(value: Any) -> str | None:
+    if not isinstance(value, dict):
+        return None
+    parts = {key: _exact_int(value.get(key)) for key in ("year", "month", "day", "hour", "minute")}
+    if any(part is None for part in parts.values()):
+        return None
+    try:
+        return datetime(**parts).strftime("%H:%M")
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _timestamp_clock(value: Any) -> str | None:
+    """A reservation timestamp as the calendar clock it encodes (service clock, UTC+8)."""
+    stamp = _exact_int(value)
+    if stamp is None or not _TIME_OF_DAY_MS <= stamp < 253402300800000:
+        return None
+    try:
+        return datetime.fromtimestamp(stamp / 1000, SERVICE_CLOCK).strftime("%H:%M")
+    except (ValueError, OverflowError, OSError):
+        return None
+
+
+def _struct_clock(value: Any) -> tuple[int, int] | None:
+    """Hour and minute of a calendar field, dated or not."""
+    if not isinstance(value, dict):
+        return None
+    hour, minute = _exact_int(value.get("hour")), _exact_int(value.get("minute"))
+    return (hour, minute) if hour is not None and minute is not None and 0 <= hour < 24 and 0 <= minute < 60 else None
+
+
+def undated_window(chg: dict) -> tuple[tuple[int, int], tuple[int, int]] | None:
+    """A window kept only in undated calendar fields, with both daily times 0.
+
+    An Aion UT reported a one-time 12:00-13:00 window set while it was charging this way
+    (2026-10-17): times 0, startTime/stopTime year 2000, month and day 0, hours 12 and 13.
+    The "not set" placeholder looks the same but reads 00:00 and 00:01.
+    """
+    if not all(_exact_int(chg.get(key)) == 0 for key in ("dailyReservationStartTime", "dailyReservationStopTime")):
+        return None
+    if any(_calendar_clock(chg.get(key)) for key in ("startTime", "stopTime")):
+        return None
+    start, stop = (_struct_clock(chg.get(key)) for key in ("startTime", "stopTime"))
+    if start is None or stop is None or all(hour == 0 and minute <= 1 for hour, minute in (start, stop)):
+        return None
+    return start, stop
+
+
+def _window_not_set(chg: dict) -> bool:
+    """The car's placeholder for no window (the app's "Charging time is not set"):
+    both times 0, neither calendar field a real date, and no window in the undated fields."""
+    return (all(_exact_int(chg.get(key)) == 0 for key in ("dailyReservationStartTime", "dailyReservationStopTime"))
+            and not any(_calendar_clock(chg.get(key)) for key in ("startTime", "stopTime"))
+            and undated_window(chg) is None)
+
+
+def _reservation_format(chg: dict) -> str | None:
+    if _window_not_set(chg):
+        return None
+    values = [_exact_int(chg.get(key)) for key in ("dailyReservationStartTime", "dailyReservationStopTime")]
+    if all(value is not None and 0 <= value < _TIME_OF_DAY_MS for value in values):
+        return "time_of_day"
+    if all(value is not None and _TIME_OF_DAY_MS <= value < 253402300800000 for value in values):
+        return "timestamp"
+    return None
 
 
 @dataclass
@@ -86,6 +271,19 @@ class Tyre:
 
 
 @dataclass
+class Seat:
+    """Stable app seat ID: driver, front passenger, rear left, rear right (1–4)."""
+
+    position: str
+    ventilation_on: bool | None = None
+    ventilation_strength: float | None = None
+    heating_strength: float | None = None
+    temperature_mode: int | None = None
+    # Retain uncalibrated values (potentially Smart) without assigning a meaning.
+    ventilation_enable_code: int | None = None
+
+
+@dataclass
 class VehicleStatus:
     online: bool | None = None
     updated_ms: int | None = None
@@ -93,6 +291,9 @@ class VehicleStatus:
     soc: float | None = None                 # %
     range_km: float | None = None
     charging: bool | None = None
+    # the charge has ended (a window finished, the connector was unlocked) and the car will
+    # not start another by itself (see restart_needed)
+    charge_ended: bool | None = None
     charging_mode: ChargingMode | None = None
     charge_current_a: float | None = None
     charge_voltage_v: float | None = None
@@ -103,8 +304,17 @@ class VehicleStatus:
     # odometer / environment
     odometer_km: float | None = None
     cabin_temp_c: float | None = None
+    outside_temp_c: float | None = None
     pm25: float | None = None
     aux_voltage: float | None = None         # 12 V battery
+    # batteryAccessors temperature: below the outside temperature on an Aion UT, parked or
+    # driving, so most likely the cooled traction battery rather than the 12 V one
+    battery_temp_c: float | None = None
+    # drivingOverviewAccessors averageElectricityConsumption: the average of the drive under way,
+    # else the last one, kept while parked (Aion UT, 2026-10-17: from 12.3 a minute into a drive
+    # down to 11.4, the screen's Trip read 11.7; held at 11.8 once switched off). Unit code 0
+    # is kWh/100 km; other codes are not decoded.
+    trip_consumption_kwh_100km: float | None = None
     # location
     latitude: float | None = None
     longitude: float | None = None
@@ -112,14 +322,49 @@ class VehicleStatus:
     locked: bool | None = None               # True = all doors locked
     door_open: bool | None = None
     window_open: bool | None = None
-    hatch_open: bool | None = None
+    hatch_open: bool | None = None           # the boot: every hatch except 1
+    hood_open: bool | None = None            # hatch 1, the bonnet
+    # each door and window by position (see POSITIONS)
+    front_left_door_open: bool | None = None
+    front_right_door_open: bool | None = None
+    rear_left_door_open: bool | None = None
+    rear_right_door_open: bool | None = None
+    front_left_window_open: bool | None = None
+    front_right_window_open: bool | None = None
+    rear_left_window_open: bool | None = None
+    rear_right_window_open: bool | None = None
+    # airConditionAccessors airConditionAntivirusMode: 1 while sterilisation runs (the car
+    # also runs the A/C hot), 0 otherwise, 3 once a run has finished (Aion UT, 2026-10-17).
+    # 4 is read as interrupted: GAC's alert list numbers finished 3 and interrupted 4.
+    sterilisation_on: bool | None = None
+    # lightAccessors (see LIGHTS): light 2 is on with the dipped headlights, 3 with the high
+    # beams, 5 with the rear fog light, 6 with either turn indicator or the hazard lights, 7
+    # with the brake lights (Aion UT). Daytime running lights, side lights and reading lamps
+    # are not reported.
+    headlights_on: bool | None = None
+    high_beam_on: bool | None = None
+    rear_fog_on: bool | None = None
+    turn_signal_on: bool | None = None
+    brake_lights_on: bool | None = None
     sunroof_open: bool | None = None
+    brake_fluid_low: bool | None = None
     tyres: list[Tyre] = field(default_factory=list)
     # climate
     ac_on: bool | None = None
     ac_target_temp_c: float | None = None
+    ac_fan_strength: float | None = None
+    ac_auto_on: bool | None = None
+    ac_compressor_on: bool | None = None
+    ac_blowing_mode: int | None = None
+    ac_cycling_mode: int | None = None
+    seats: list[Seat] = field(default_factory=list)
+    anti_theft_on: bool | None = None
     steering_heat_on: bool | None = None
     lights_on: bool | None = None
+    # batteryPretreatmentMode: 0 off, 1 immediately, 2 once, 3 repeating (the app's names)
+    battery_precondition_mode: int | None = None
+    battery_precondition_on: bool | None = None
+    battery_precondition_status: int | None = None
     # fridge / warmer box: None when the car does not report one
     fridge_fitted: bool = False
     fridge_mode: str | None = None           # "off" | "refrigerate" | "heat" | "freeze"
@@ -134,20 +379,28 @@ class VehicleStatus:
     charge_window_start: str | None = None
     charge_window_stop: str | None = None
     charge_weekly: int | None = None
+    charge_end_type: int | None = None
+    charge_time_format: str | None = None
+    charge_clock_consistent: bool | None = None
     raw: dict = field(default_factory=dict)
+    # Vehicle power is independent of cloud connectivity and cabin A/C.
+    power_on: bool | None = None
+    power_mode: int | None = None
 
-    # gateway "unknown" placeholder for charge current
+    # gateway "unknown" placeholder for charge current: a saturated 14-bit field
+    # (0x3FFF × 0.1 = 1638.3), so anything from 1638 A up is not a reading
     _CURRENT_UNKNOWN = 1638.0
     # doorAccessors[].lock: 0 = locked, 1 = unlocked, <0 = unknown
     _LOCK_LOCKED = 0
     # refrigeratorAccessors[].workingMode
     _FRIDGE_MODE = {1: "refrigerate", 2: "heat", 3: "off", 4: "freeze"}
     _FRIDGE_KEEP = {1: "timed", 0: "unlimited"}
-    # tyre report order (positions unverified; documented as such)
-    _TYRE_POS = {1: "front left", 2: "front right", 3: "rear left", 4: "rear right"}
 
     @classmethod
-    def from_results(cls, results: dict, *, online: bool | None = None, updated_ms: int | None = None) -> VehicleStatus:
+    def from_results(cls, results: dict, *, online: bool | None = None,
+                     updated_ms: int | None = None, model: str | None = None) -> VehicleStatus:
+        if not isinstance(results, dict):
+            raise ValueError("vehicle report must be an object")
         drv = _first(results, "drivingOverviewAccessors")
         chg = _first(results, "chargingAccessors")
         cgr = _first(results, "chargerAccessors")
@@ -157,47 +410,91 @@ class VehicleStatus:
         air = _first(results, "airConditionAccessors")
         steer = _first(results, "steeringAccessors")
         light = _first(results, "lightAccessors")
+        theft = _first(results, "antiTheftAccessors")
+        vehicle_power = _exact_int(_first(results, "powerAccessors").get("powerMode"))
+        pretreatment = _first(results, "batteryPretreatmentAccessors")
+        precondition = _exact_int(pretreatment.get("batteryPretreatmentMode"))
+        precondition = precondition if precondition in (0, 1, 2, 3) else None
+        precondition_status = _exact_int(pretreatment.get("batteryPretreatmentStatus"))
         fridge = _first(results, "refrigeratorAccessors")
         keep_mode = cls._FRIDGE_KEEP.get(_exact_int(fridge.get("leavingVehicleStatus")))
         keep_minutes = _exact_int(fridge.get("surplusTime")) if keep_mode == "timed" else None
         if keep_minutes is not None and keep_minutes < 0:
             keep_minutes = None
 
-        soc = _num(drv.get("remainElectricityPercentage"))
-        cur = _num(chg.get("chargingCurrent"))
-        if cur == cls._CURRENT_UNKNOWN:
+        soc = _bounded(drv.get("remainElectricityPercentage"), 0, 1)
+        cur = _bounded(chg.get("chargingCurrent"), 0) if _not_invalid(chg, "chargingCurrentFlag") else None
+        if cur is not None and cur >= cls._CURRENT_UNKNOWN:
             cur = None
-        est = _num(chg.get("estimatedChargedDuration"))
+        est = _num(chg.get("estimatedChargedDuration")) if _not_invalid(chg, "estimatedChargedDurationFlag") else None
+        # An Aion UT sends milliseconds in whole minutes (24240000 while its screen showed
+        # 6 h 42 min, 2026-10-16), and 0 when not charging; a small value is taken as minutes.
+        if est is not None and (est >= _MAX_CHARGE_MINUTES or (est > 0 and est % 60000 == 0)):
+            est = round(est / 60000)
         if est is not None and not 0 <= est < _MAX_CHARGE_MINUTES:
             est = None   # discard an out-of-range duration
-        volt = _num(chg.get("chargingVoltage")) if chg.get("chargingVoltageFlag", 1) else None
+        volt = _num(chg.get("chargingVoltage")) if _enabled(chg, "chargingVoltageFlag") else None
         if volt is not None and volt <= 0:
             volt = None
         power = round(volt * cur / 1000, 2) if volt is not None and cur is not None and cur >= 0 else None
 
-        doors = results.get("doorAccessors") or []
-        locked = None
-        if doors:
-            locked = all(d.get("lock") == cls._LOCK_LOCKED for d in doors)
+        locked = _decode_door_locks(results.get("doorAccessors"), model)
 
-        tyres = []
-        for t in results.get("tyreAccessors") or []:
-            idx = t.get("tyre")
-            tyres.append(Tyre(
-                position=cls._TYRE_POS.get(idx, str(idx)),
-                pressure_kpa=_num(t.get("pressure")) if t.get("pressureFlag", 1) else None,
-                temperature_c=_num(t.get("temperature")) if t.get("temperatureFlag", 1) else None,
-            ))
+        # Stable API IDs, not an unverified mapping to physical corners.
+        tyres = [Tyre(str(index), None, None) for index in range(1, 5)]
+        seen: set[int] = set()
+        for item in _items(results, "tyreAccessors"):
+            if not isinstance(item, dict):
+                continue
+            index = _exact_int(item.get("tyre"))
+            if index not in (1, 2, 3, 4):
+                continue
+            if index in seen:
+                tyres[index - 1] = Tyre(str(index), None, None)
+                continue
+            seen.add(index)
+            pressure = _num(item.get("pressure"))
+            temperature = _num(item.get("temperature"))
+            if pressure == -1 and temperature == -1:
+                temperature = None  # paired UT placeholders; -1 C alone is valid
+            if not _enabled(item, "pressureFlag") or (pressure is not None and pressure < 0):
+                pressure = None
+            if not _enabled(item, "temperatureFlag"):
+                temperature = None
+            tyres[index - 1] = Tyre(str(index), pressure, temperature)
 
         def any_open(key: str, sub: str) -> bool | None:
-            """None when the group is absent or no item reports a known state (negative = unknown)."""
-            items = results.get(key)
-            if not items:
+            # Items flagged invalid are left out, not counted as unknown.
+            items = [i for i in _items(results, key) if not (isinstance(i, dict) and not _not_invalid(i, f"{sub}Flag"))]
+            modes = [_exact_int(i.get(sub)) if isinstance(i, dict) else None for i in items]
+            if any(mode is not None and mode > 0 for mode in modes):
+                return True
+            return False if modes and all(mode == 0 for mode in modes) else None
+
+        def hatch_open(hood: bool) -> bool | None:
+            """Hatch 1 is the bonnet and the others the boot, as an Aion UT reports them.
+
+            A closed UT boot (hatch 3) reports openModeFlag 0 with openMode 0, and flag 1
+            once open, so a flagged-off 0 counts as closed; other flagged-off values are unknown.
+            """
+            def mode(item: dict) -> int | None:
+                value = _exact_int(item.get("openMode"))
+                return value if _not_invalid(item, "openModeFlag") or value == 0 else None
+
+            modes = [mode(i) for i in _items(results, "hatchAccessors")
+                     if isinstance(i, dict) and (_exact_int(i.get("hatch")) == 1) == hood]
+            if any(mode is not None and mode > 0 for mode in modes):
+                return True
+            return False if modes and all(mode == 0 for mode in modes) else None
+
+        def brake_fluid_low() -> bool | None:
+            """Brake fluid is reported only in brakeAccessors[].alarms; a positive reason is an alarm."""
+            items = [i for i in _items(results, "brakeAccessors") if isinstance(i, dict)]
+            lists = [i.get("alarms") for i in items if isinstance(i.get("alarms"), list)]
+            if not lists:
                 return None
-            modes = [_num(i.get(sub)) for i in items]
-            if all(m is None or m < 0 for m in modes):
-                return None
-            return any(m is not None and m > 0 for m in modes)
+            reasons = [_exact_int(a.get("alarmReason")) for alarms in lists for a in alarms if isinstance(a, dict)]
+            return any(reason is not None and reason > 0 for reason in reasons)
 
         # Negative values are "unknown / not fitted" sentinels. A/C is on when the
         # compressor or the fan reports on; off only when both explicitly report off.
@@ -214,55 +511,139 @@ class VehicleStatus:
         if steering is not None and steering < 0:
             steering = None
         lights = _num(light.get("open"))
-        if lights is not None and lights < 0:
+        if lights == -1:
+            lights = 0      # an Aion UT reports -1 while its lights are off (see _light_on)
+        elif lights is not None and lights < 0:
             lights = None
-        weekly = _num(chg.get("weeklyReservation"))
-        if weekly is not None and not (weekly == weekly and abs(weekly) != float("inf") and weekly == int(weekly)):
-            weekly = None   # only finite, whole-number bitmasks are meaningful
+        lights_by_name = {name: _light_on(_numbered(results, "lightAccessors", "light", number))
+                          for number, name in LIGHTS.items()}
+        by_position = {
+            f"{position}_{kind}_open": _opened(_numbered(results, f"{kind}Accessors", kind, number))
+            for number, position in POSITIONS.items() for kind in ("door", "window")
+        }
+        weekly = _exact_int(chg.get("weeklyReservation"))
+        if weekly is not None and not 0 <= weekly <= 127:
+            weekly = None
+        mode = _exact_int(chg.get("chargingMode"))
+        stamp = _exact_int(updated_ms)
+        if stamp is not None and not 0 < stamp < 253402300800000:
+            stamp = None
 
-        raw_status = _num(chg.get("chargingStatus"))
-        try:
-            mode = ChargingMode(int(_num(chg.get("chargingMode")))) if chg.get("chargingMode") is not None else None
-        except ValueError:
-            mode = ChargingMode.UNKNOWN
+        seats = [Seat(str(index)) for index in range(1, 5)]
+        seen_seats: set[int] = set()
+        for item in _items(results, "seatTemperatureAccessors"):
+            if not isinstance(item, dict):
+                continue
+            index = _exact_int(item.get("seat"))
+            if index not in (1, 2, 3, 4):
+                continue
+            if index in seen_seats:
+                seats[index - 1] = Seat(str(index))
+                continue
+            seen_seats.add(index)
+            wind_code = _exact_int(item.get("enableWind"))
+            enabled = {0: False, 1: True}.get(wind_code)
+            strength = _bounded(item.get("windStrength"), 0)
+            if enabled is True and strength is not None:
+                enabled = strength > 0
+            seats[index - 1] = Seat(
+                str(index), enabled, strength, _bounded(item.get("temperatureStrength"), 0),
+                _exact_int(item.get("temperatureMode")), wind_code,
+            )
+
+        clocks = []
+        comparisons = []
+        for struct_key, time_key in (("startTime", "dailyReservationStartTime"),
+                                     ("stopTime", "dailyReservationStopTime")):
+            calendar = _calendar_clock(chg.get(struct_key))
+            timestamp = _timestamp_clock(chg.get(time_key))
+            clocks.append(calendar or _hhmm(chg.get(time_key)) or timestamp)
+            if calendar is not None and timestamp is not None:
+                comparisons.append(calendar == timestamp)
+        if _window_not_set(chg):
+            clocks = [None, None]
+        elif (undated := undated_window(chg)) is not None:
+            clocks = [f"{hour:02d}:{minute:02d}" for hour, minute in undated]
+        end_type = _exact_int(chg.get("chargingEndType"))
+        range_km = _bounded(drv.get("remainVoyageCourse"), 0) if _not_invalid(drv, "remainVoyageCourseFlag") else None
+        cabin_temp = _num(env.get("temperatureInsideCar")) if _not_invalid(env, "temperatureInsideCarFlag") else None
 
         return cls(
-            online=online,
-            updated_ms=updated_ms,
+            online=online if isinstance(online, bool) else {0: False, 1: True}.get(_exact_int(online)),
+            updated_ms=stamp,
+            power_on={0: False, 1: True, 2: True}.get(vehicle_power),
+            power_mode=vehicle_power,
             soc=round(soc * 100, 1) if soc is not None else None,
-            range_km=_num(drv.get("remainVoyageCourse")),
-            charging=(raw_status == ChargingStatus.CHARGING) if raw_status is not None else None,
-            charging_mode=mode,
+            range_km=range_km,
+            # chargingStatus (Aion UT, 2026-10-16/17): 0 not charging (also unplugged), 1 plugged
+            # in with the charger's supply off, 2 charging, 4 plugged in once a one-time window had
+            # ended, 7 once just before a window's start and once the supply was switched off while
+            # charging, 23 after the connector was unlocked, 27 waiting for a scheduled start (the
+            # screen's "Scheduled charge waiting").
+            charging={0: False, 1: False, 2: True, 4: False, 7: False, 23: False, 27: False}.get(
+                _exact_int(chg.get("chargingStatus"))),
+            charge_ended={0: True, 1: False, 2: False, 4: True, 7: False, 23: True, 27: False}.get(
+                _exact_int(chg.get("chargingStatus"))),
+            charging_mode=ChargingMode(mode) if mode in (0, 1, 2) else None,
             charge_current_a=cur,
             charge_voltage_v=volt,
             charge_power_kw=power,
             estimated_charge_minutes=int(est) if est is not None else None,
-            plugged_in=(cgr.get("plug") == 1) if cgr.get("plug") is not None else None,
-            charger_locked=(cgr.get("lock") == cls._LOCK_LOCKED) if cgr.get("lock") is not None else None,
-            odometer_km=_num(drv.get("totalVoyageCourse")),
-            cabin_temp_c=_num(env.get("temperatureInsideCar")),
-            pm25=_num(env.get("pm25")),
-            aux_voltage=_num(bat.get("voltage")),
-            latitude=_num(pos.get("latitude")),
-            longitude=_num(pos.get("longitude")),
+            plugged_in={0: False, 1: True}.get(_exact_int(cgr.get("plug"))),
+            charger_locked={0: True, 1: False}.get(_exact_int(cgr.get("lock"))),
+            # A real odometer is never 0; a zero placeholder would look like a meter reset.
+            odometer_km=_bounded(drv.get("totalVoyageCourse"), 0) or None,
+            cabin_temp_c=cabin_temp,
+            outside_temp_c=_num(env.get("temperatureOutsideCar")),
+            pm25=_bounded(env.get("pm25"), 0),
+            aux_voltage=_bounded(bat.get("voltage"), 0),
+            battery_temp_c=_num(bat.get("temperature")),
+            trip_consumption_kwh_100km=(_bounded(drv.get("averageElectricityConsumption"), 0, 200)
+                                        if _exact_int(drv.get("electricityConsumptionUnit", 0)) == 0 else None),
+            latitude=_bounded(pos.get("latitude"), -90, 90),
+            longitude=_bounded(pos.get("longitude"), -180, 180),
             locked=locked,
             door_open=any_open("doorAccessors", "openMode"),
             window_open=any_open("windowAccessors", "openMode"),
-            hatch_open=any_open("hatchAccessors", "openMode"),
+            hatch_open=hatch_open(hood=False),
+            hood_open=hatch_open(hood=True),
+            **by_position,
+            headlights_on=lights_by_name["headlights"],
+            high_beam_on=lights_by_name["high_beam"],
+            rear_fog_on=lights_by_name["rear_fog"],
+            turn_signal_on=lights_by_name["turn_signal"],
+            brake_lights_on=lights_by_name["brake_lights"],
+            sterilisation_on={0: False, 1: True, 3: False, 4: False}.get(
+                _exact_int(air.get("airConditionAntivirusMode"))),
+            brake_fluid_low=brake_fluid_low(),
             sunroof_open=any_open("sunroofAccessors", "openMode"),
             tyres=tyres,
             ac_on=ac_on,
             ac_target_temp_c=_num(air.get("temperature")),
+            ac_fan_strength=_bounded(air.get("windStrength"), 0),
+            ac_auto_on={0: False, 1: True}.get(_exact_int(air.get("enableAutoMode"))),
+            ac_compressor_on={0: False, 1: True}.get(_exact_int(air.get("enableAirCompressor"))),
+            ac_blowing_mode=_exact_int(air.get("blowingMode")),
+            ac_cycling_mode=_exact_int(air.get("cyclingMode")),
+            seats=seats,
+            anti_theft_on={0: False, 1: True}.get(_exact_int(theft.get("enable"))),
+            battery_precondition_mode=precondition,
+            battery_precondition_on=None if precondition is None else precondition != 0,
+            battery_precondition_status=precondition_status if precondition_status is not None
+            and precondition_status >= 0 else None,
             steering_heat_on=(steering > 0) if steering is not None else None,
             lights_on=(lights > 0) if lights is not None else None,
-            fridge_fitted=bool(results.get("refrigeratorAccessors")),
+            fridge_fitted=bool(fridge),
             fridge_mode=cls._FRIDGE_MODE.get(_exact_int(fridge.get("workingMode"))),
             fridge_temp_c=_finite(fridge.get("refrigeratorTemperature")),
             fridge_keep_mode=keep_mode,
             fridge_keep_minutes=keep_minutes,
-            charge_window_start=_hhmm(chg.get("dailyReservationStartTime")),
-            charge_window_stop=_hhmm(chg.get("dailyReservationStopTime")),
+            charge_window_start=clocks[0],
+            charge_window_stop=clocks[1],
             charge_weekly=int(weekly) if weekly is not None else None,
+            charge_end_type=end_type if end_type in (0, 1) else None,
+            charge_time_format=_reservation_format(chg),
+            charge_clock_consistent=(False if False in comparisons else True if len(comparisons) == 2 else None),
             raw=results,
         )
 

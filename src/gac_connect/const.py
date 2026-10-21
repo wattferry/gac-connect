@@ -1,11 +1,14 @@
 """Endpoints, regions and protocol constants for the GAC international API."""
 from __future__ import annotations
 
+from datetime import timedelta, timezone
 from typing import Final
 
 # Main account API and the IoV vehicle gateway are two separate backends with
 # two separate crypto profiles.
 IOV_PREFIX: Final = "/iov-vehicle-gateway/v1/platform/vehicle/access_gateway"
+# Reads a command's result without the push feed; note /iov/, not /platform/.
+IOV_POLL_RESULT: Final = "/iov-vehicle-gateway/v1/iov/vehicle/access_gateway/poll_access_response"
 
 # Both hosts are built from a per-country prefix, so the table holds prefixes
 # instead of repeating two long names 56 times. Each country has a main API prefix
@@ -170,10 +173,18 @@ MAX_RATE_LIMIT_COOLDOWN: Final = 86400.0
 # long as the longest pause the service could have asked for.
 RECOVERY_PAUSE: Final = MAX_RATE_LIMIT_COOLDOWN
 
+# The clock the service uses for charge-reservation timestamps: on the Singapore
+# gateway an Aion UT in Asia/Bangkok reports a once window at 22:06 as 22:06+08:00.
+# Other gateways are unverified; decoding prefers the calendar fields anyway.
+SERVICE_CLOCK: Final = timezone(timedelta(hours=8))
+
 # Gateway result codes.
 CODE_OK: Final = "0000"
 CODE_COMMAND_ACCEPTED: Final = 13001      # async command queued ("ongoing") — success
+# Codes that mark a reply as successful.
+SUCCESS_RESULT_CODES: Final = frozenset({"0", "0000", "1000", "2000", "13000"})
 CODE_COMMAND_MALFORMED: Final = 13101
+CODE_UNSUPPORTED_VALUE: Final = 13002     # "not supported", e.g. an Aion UT refusing remote fan speeds 8–10
 ERR_TOKEN_INVALID: Final = "SDK.GATE.0007"
 ERR_VIN_HEADER: Final = "SDK.GATE.0017"
 ERR_REPEAT_REQUEST: Final = "SDK.GATE.0018"

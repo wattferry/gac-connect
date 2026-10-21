@@ -117,8 +117,7 @@ def test_status_decoding():
         "environmentAccessors": [{"temperatureInsideCar": 30.0, "pm25": 0}],
         "batteryAccessors": [{"voltage": 12.4}],
         "positionAccessors": [{"latitude": 1.5, "longitude": 100.5}],
-        "doorAccessors": [{"door": 1, "openMode": 0, "lock": 0},
-                          {"door": 2, "openMode": 0, "lock": 0}],
+        "doorAccessors": [{"door": n, "openMode": 0, "lock": 0} for n in (1, 2, 3, 4)],
         "windowAccessors": [{"window": 1, "openMode": 0}],
         "tyreAccessors": [{"tyre": 1, "pressure": 254.0, "temperature": 25.0,
                            "pressureFlag": 1, "temperatureFlag": 1}],
@@ -130,15 +129,16 @@ def test_status_decoding():
     assert s.charge_current_a is None       # 1638 placeholder -> None
     assert s.plugged_in is True and s.locked is True
     assert s.door_open is False and s.aux_voltage == 12.4
-    assert s.tyres[0].pressure_kpa == 254.0 and s.tyres[0].position == "front left"
+    assert s.tyres[0].pressure_kpa == 254.0 and s.tyres[0].position == "1"
 
 
 def test_command_bodies():
     from gac_connect.commands import CATALOG, build_body
     assert build_body(CATALOG["status"], "V1") == {"vin": "V1"}
     ac = build_body(CATALOG["aircon-on"], "V1")
-    assert ac["identifier"]["vin"] == "V1" and ac["operations"][0]["airOperationType"] == "on"
-    assert CATALOG["unlock"].pin is True and CATALOG["lock"].pin is False
+    assert ac == {"identifier": {"vin": "V1", "grade": 2, "duration": 30},
+                  "operations": [{"enableAutoMode": 1, "temperature": 24.0, "temperatureUnit": 0}]}
+    assert CATALOG["unlock"].pin is False and CATALOG["lock"].pin is False
 
 
 def test_charge_operations():
@@ -146,10 +146,7 @@ def test_charge_operations():
     from gac_connect import vehicle
     now = vehicle.charge_now_operation()
     assert now["chargingMode"] == vehicle.MODE_FREE
-    pause = vehicle.pause_operation(ZoneInfo("Australia/Brisbane"))
-    assert pause["chargingMode"] == vehicle.MODE_SCHEDULED
-    assert "startTime" in pause and "stopTime" in pause
-    win = vehicle.window_operation("23:00", "05:00", ZoneInfo("Australia/Brisbane"), weekly=0)
+    win = vehicle.window_operation("23:00", "05:00", ZoneInfo("Australia/Brisbane"), weekly=127)
     assert win["dailyReservationStartTime"] == (23 * 60) * 60000
 
 
@@ -226,14 +223,15 @@ def test_status_climate_and_window():
 def test_fitted_and_time_edges():
     from gac_connect.models import VehicleStatus, _hhmm
     s = VehicleStatus.from_results({
-        "hatchAccessors": [{"openMode": -1, "hatch": 1}, {"openMode": 0, "hatch": 2}],
+        "hatchAccessors": [{"openMode": -1, "hatch": 2}, {"openMode": 0, "hatch": 3}],
         "windowAccessors": [{"openMode": "2"}],
     })
-    assert s.hatch_open is False        # one fitted + closed item -> closed
+    assert s.hatch_open is None         # a partly unknown group is not known closed
     assert s.window_open is True        # numeric strings decode
     assert VehicleStatus.from_results({"hatchAccessors": [{"openMode": "x"}]}).hatch_open is None
     assert _hhmm(0) == "00:00" and _hhmm(86_399_000) == "23:59"
-    assert _hhmm(86_400_000) is None and _hhmm(-1) is None and _hhmm("abc") is None
+    assert _hhmm(87_000_000) == "00:10"            # a stop past midnight, as the car reports it
+    assert _hhmm(172_800_000) is None and _hhmm(-1) is None and _hhmm("abc") is None
 
 
 def test_climate_validation():
@@ -288,7 +286,7 @@ def test_horn_commands():
 def test_lights_state():
     from gac_connect.models import VehicleStatus
     L = lambda v: VehicleStatus.from_results({"lightAccessors": [{"open": v, "light": 1}]}).lights_on  # noqa: E731
-    assert L(1) is True and L(0) is False and L(-1) is None and L("x") is None
+    assert L(1) is True and L(0) is False and L(-1) is False and L(-2) is None and L("x") is None
     assert VehicleStatus.from_results({}).lights_on is None
 
 
@@ -335,18 +333,42 @@ def test_push_helpers():
     assert interpret(b'{"code": 0, "data": {"updateTime": 1.5e3}}').update_time_ms == 1500
     assert interpret(b'{"code": 0, "data": {"updateTime": NaN}}').update_time_ms is None
     assert "password" not in repr(BrokerInfo.from_data({"host": "b", "password": "secret", "topics": ["t"]}))
+    assert BrokerInfo.from_data({"host": "b", "topics": "acct/1/result"}).topics == ("acct/1/result",)
+    assert BrokerInfo.from_data({"host": "b", "topics": "a/1, b/2"}).topics == ("a/1", "b/2")
+    assert BrokerInfo.from_data({"host": "b", "topics": ["t", 7, " ", None]}).topics == ("t",)
+    assert BrokerInfo.from_data({"host": "b", "topics": {"t": 1}}).topics == ()
+    assert interpret(b'{"code": null, "resultCode": "0000"}').ok is True
+    assert interpret(b'{"code": null, "resultCode": null, "status": "fail"}').ok is False
+    assert interpret(b'{"code": 13002}').ok is False
+    assert interpret(b'{"code": 13002}').reason == "not supported by this vehicle"
+    for code in (b"13003", b'"13008"', b"13903", b"15001", b"15016", b"15045", b'"11018"'):
+        assert interpret(b'{"code": ' + code + b"}").ok is False
+    assert interpret(b'{"code": 13007}').ok is None and interpret(b'{"code": 13007}').reason is None
+    assert interpret(b'{"code": 0}').reason is None
+    app = BrokerInfo.from_data({"connectHost": "ssl://b.example", "connectPort": 8884, "clientId": "c",
+                                "topicList": [{"topicName": "acct/1", "topicBizCode": 1}, {"topicBizCode": 2}, "x/2"]})
+    assert (app.host, app.port, app.tls, app.topics) == ("b.example", 8884, True, ("acct/1", "x/2"))
+    for code in (b'"1000"', b"2000", b'"13000"'):
+        assert interpret(b'{"code": ' + code + b"}").ok is True
 
 
 def test_charge_power_and_time():
     from gac_connect.models import VehicleStatus
     s = VehicleStatus.from_results({"chargingAccessors": [{"chargingCurrent": 8.8, "chargingVoltage": 240.0,
                                                            "estimatedChargedDuration": 44460000}]})
-    assert s.charge_voltage_v == 240.0 and s.charge_power_kw == 2.11 and s.estimated_charge_minutes is None
+    # Milliseconds in whole minutes: 44460000 is 12 h 21 min at 2.1 kW.
+    assert s.charge_voltage_v == 240.0 and s.charge_power_kw == 2.11 and s.estimated_charge_minutes == 741
     s = VehicleStatus.from_results({"chargingAccessors": [{"chargingCurrent": 0.0, "chargingVoltage": 0.0,
                                                            "estimatedChargedDuration": 95}]})
     assert s.charge_power_kw is None and s.charge_voltage_v is None and s.estimated_charge_minutes == 95
     s = VehicleStatus.from_results({"chargingAccessors": [{"chargingCurrent": 0.0, "chargingVoltage": 240.0}]})
     assert s.charge_power_kw == 0.0 and s.charge_voltage_v == 240.0
+    # Aion UT 2026-10-16: 24240000 while the car's screen showed 6 h 42 min.
+    s = VehicleStatus.from_results({"chargingAccessors": [{"estimatedChargedDuration": 24240000,
+                                                           "estimatedChargedDurationFlag": 1}]})
+    assert s.estimated_charge_minutes == 404
+    s = VehicleStatus.from_results({"chargingAccessors": [{"estimatedChargedDuration": 8 * 86_400_000}]})
+    assert s.estimated_charge_minutes is None                       # over a week: discarded
 
 
 # ---- fridge -----------------------------------------------------------------
@@ -629,7 +651,7 @@ def test_command_budget_is_separate_and_counted_at_dispatch():
     import asyncio
     import pytest
     from gac_connect.errors import RateLimitedError
-    http = _FakeHttp(_FakeResp(body=b'{"success": true, "data": {}}'))
+    http = _FakeHttp(_FakeResp(body=b'{"success": true, "data": {"results": [{}]}}'))
     lim = _limiter(command_budgets=((60, 2),))
     c = _client(http, lim)
     async def go():
@@ -647,7 +669,7 @@ def test_a_refused_request_does_not_use_up_the_command_budget():
     import asyncio
     import pytest
     from gac_connect.errors import RateLimitedError
-    http = _FakeHttp(_FakeResp(body=b'{"success": true, "data": {}}'))
+    http = _FakeHttp(_FakeResp(body=b'{"success": true, "data": {"results": [{}]}}'))
     lim = _limiter(request_budgets=((60, 1),), command_budgets=((60, 5),))
     c = _client(http, lim)
     async def go():
@@ -717,10 +739,10 @@ def test_retry_after_forms():
 def test_redirects_are_not_followed():
     import asyncio
     import pytest
-    from gac_connect.errors import CommandError
+    from gac_connect.errors import ResponseError
     http = _FakeHttp(_FakeResp(status=302, headers={"Location": "https://elsewhere/"}))
     c = _client(http)
-    with pytest.raises(CommandError):
+    with pytest.raises(ResponseError):
         asyncio.run(c.get_status("VIN"))
     assert http.calls == 1
     assert http.kwargs[0]["allow_redirects"] is False and http.kwargs[0]["raise_for_status"] is False
@@ -912,11 +934,11 @@ def test_rotated_tokens_are_saved_before_use_and_shared_through_the_store():
     expired = Session(token="t", refresh_token="r", expire_time=1, rexpire_time=later)
     store = MemoryStore(expired)
     seen = []
-    orig = store.save
-    async def save(sess):
+    orig = store.replace            # every client write is a compare-and-save
+    async def replace(expected, sess):
         seen.append((sess.token, a._session.token, b._session.token))
-        await orig(sess)
-    store.save = save
+        return await orig(expected, sess)
+    store.replace = replace
     from gac_connect.client import GacClient
     a, b = GacClient("AU", http, store, limiter=_limiter()), GacClient("AU", http, store, limiter=_limiter())
     async def go():
@@ -1322,3 +1344,91 @@ def test_uk_profile_selects_its_own_backend():
     # An International region is unaffected.
     assert REGIONS["AU"]["profile"] == "intl"
     assert REGIONS["AU"]["main"].endswith("gac-international.com")
+
+
+
+def _renewal_route(*, sso_ok=True, account_ok=True, sso_fails_first=False, status_ok=True):
+    """A spent vehicle refresh token, with the account session answering as configured."""
+    import json
+    state = {"sso": 0}
+    def route(url):
+        if url.endswith("/refresh/token"):
+            body = {"success": False, "code": "ACCOUNT.0015"}
+        elif url.endswith("/iam/sso/login/sec"):
+            state["sso"] += 1
+            ok = sso_ok and not (sso_fails_first and state["sso"] == 1)
+            body = {"success": True, "data": "TICKET"} if ok else {"success": False, "code": "4406"}
+        elif url.endswith("/gateway/sso/login"):
+            body = {"success": True, "data": {"token": "v2", "refreshToken": "vr2",
+                                              "expireTime": 10**14, "rexpireTime": 10**14}}
+        elif url.endswith("/iam/api/user/token/refresh/sec"):
+            body = ({"success": True, "code": "0000", "data": {"token": "m2", "refreshToken": "mr2"}}
+                    if account_ok else {"success": False, "code": "4406"})
+        else:
+            return _FakeResp()
+        return _FakeResp(body=json.dumps(body).encode())
+    return route
+
+
+def _with_account(c):
+    c._session.main_token, c._session.main_refresh_token = "m1", "mr1"
+    return c
+
+
+def test_a_spent_vehicle_session_is_renewed_from_the_account_session():
+    import asyncio
+    http = _FakeHttp(route=_renewal_route())
+    c = _with_account(_client(http, token_valid=False))
+    asyncio.run(c.get_status("VIN"))
+    assert [u.split("/gateway", 1)[-1] for u in http.paths] == [
+        "/refresh/token", "/v1/iam/sso/login/sec", "/sso/login", "/v1/iam/api/user/token/refresh/sec",
+        "/iov-vehicle-gateway/v1/platform/vehicle/access_gateway/get_vehicle_status"]
+    assert (c.session.token, c.session.refresh_token, c.session.main_token) == ("v2", "vr2", "m2")
+    assert not c._auth_dead
+
+
+def test_a_refused_ticket_exchange_refreshes_the_account_token_once():
+    import asyncio
+    http = _FakeHttp(route=_renewal_route(sso_fails_first=True))
+    c = _with_account(_client(http, token_valid=False))
+    asyncio.run(c.get_status("VIN"))
+    assert sum(p.endswith("/iam/sso/login/sec") for p in http.paths) == 2
+    assert c.session.token == "v2" and not c._auth_dead
+
+
+def test_without_a_working_account_session_a_sign_in_is_needed_once():
+    import asyncio
+    import pytest
+    from gac_connect.errors import AuthExpiredError
+    http = _FakeHttp(route=_renewal_route(sso_ok=False, account_ok=False))
+    c = _with_account(_client(http, token_valid=False))
+    async def go():
+        for _ in range(3):
+            with pytest.raises(AuthExpiredError):
+                await c.get_status("VIN")
+    asyncio.run(go())
+    assert [u.split("/gateway", 1)[-1] for u in http.paths] == [
+        "/refresh/token", "/v1/iam/sso/login/sec", "/v1/iam/api/user/token/refresh/sec"]
+    assert c._auth_dead
+
+
+def test_a_network_failure_while_renewing_does_not_give_up_the_session():
+    import asyncio
+    import pytest
+    from gac_connect.errors import ResponseError
+    route = _renewal_route()
+    down = {"on": True}
+    def flaky(url):
+        if down["on"] and url.endswith("/iam/sso/login/sec"):
+            return _FakeResp(status=503, body=b"unavailable")
+        return route(url)
+    http = _FakeHttp(route=flaky)
+    c = _with_account(_client(http, token_valid=False))
+    async def go():
+        with pytest.raises(ResponseError):
+            await c.get_status("VIN")
+        assert not c._auth_dead
+        down["on"] = False
+        await c.get_status("VIN")
+    asyncio.run(go())
+    assert c.session.token == "v2"

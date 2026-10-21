@@ -64,7 +64,12 @@ class Material:
     # Keypair IoV requests are sealed to and IoV responses (and push messages)
     # are opened with. Usually the same object as ``iov``; a profile whose IoV
     # traffic uses a different keypair ships its own ``@iov_response`` block.
-    iov_response: Keypair = None  # type: ignore[assignment]  # set in load_material
+    iov_response: Keypair | None = None
+
+    def __post_init__(self) -> None:
+        # Preserve the five-argument constructor used before split response keys.
+        if self.iov_response is None:
+            object.__setattr__(self, "iov_response", self.iov)
 
 
 def _load_private(pem_block: str) -> Keypair:

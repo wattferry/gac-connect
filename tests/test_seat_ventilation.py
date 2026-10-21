@@ -1,0 +1,82 @@
+"""Seat ventilation sends enableWind 1 with a strength and leaves temperature fields out."""
+import asyncio
+from unittest.mock import AsyncMock
+
+import pytest
+
+from gac_connect.errors import CommandError
+from test_failures import Response, make_client
+
+
+@pytest.mark.parametrize("seat", [1, 2, 3, 4])
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("generic", [False, True])
+def test_seat_ventilation_matches_app_request_and_omits_temperature_fields(seat, enabled, generic):
+    client, http, _ = make_client(Response(), valid=True)
+    client._iov_call = AsyncMock(return_value={"code": 13001, "data": {"sessionId": "seat-request"}})
+
+    async def run():
+        await client.load()
+        if generic:
+            await client.command("VIN", f"seat-{seat}-ventilation-{'on' if enabled else 'off'}")
+        else:
+            await client.set_seat_ventilation("VIN", seat, enabled)
+
+    asyncio.run(run())
+    client._iov_call.assert_awaited_once_with(
+        "/iov-vehicle-gateway/v1/platform/vehicle/access_gateway/control_seat_temperature",
+        {"identifier": {"vin": "VIN", "grade": 2, "duration": 30},
+         "operations": [{"seat": seat, "enableWind": 1, "windStrength": int(enabled)}]},
+        sensitive={"vin": "VIN"}, kind="command",
+    )
+    http.post.assert_not_called()
+
+
+@pytest.mark.parametrize("seat,enabled", [(0, True), (5, True), (True, True), (1.0, True),
+                                         ("1", True), (1, 1), (1, "false"), (1, None)])
+def test_invalid_seat_inputs_never_send(seat, enabled):
+    client, http, _ = make_client(Response(), valid=True)
+    client._iov_call = AsyncMock()
+    with pytest.raises(ValueError):
+        asyncio.run(client.set_seat_ventilation("VIN", seat, enabled))
+    client._iov_call.assert_not_awaited()
+    http.post.assert_not_called()
+
+
+def test_rejected_seat_request_is_not_replayed():
+    client, http, _ = make_client(Response(), valid=True)
+    client._iov_call = AsyncMock(return_value={"code": 13101})
+
+    async def run():
+        await client.load()
+        with pytest.raises(CommandError):
+            await client.set_seat_ventilation("VIN", 1, True)
+
+    asyncio.run(run())
+    client._iov_call.assert_awaited_once()
+    http.post.assert_not_called()
+
+
+@pytest.mark.parametrize("level,command,extra", [(0, "seat-1-ventilation-off", {}),
+                                                 (2, "seat-1-ventilation-on", {"windStrength": 2}),
+                                                 (3, "seat-1-ventilation-on", {"windStrength": 3})])
+def test_seat_ventilation_levels(level, command, extra):
+    from unittest.mock import Mock
+
+    from gac_connect.client import GacClient
+    client = GacClient("TH", Mock())
+    client.command = AsyncMock(return_value={"code": 13001})
+    asyncio.run(client.set_seat_ventilation_level("VIN", 1, level))
+    client.command.assert_awaited_once_with("VIN", command, **extra)
+
+
+@pytest.mark.parametrize("seat,level", [(1, 4), (1, -1), (1, True), (5, 1), (1, 1.0)])
+def test_invalid_seat_levels_never_send(seat, level):
+    from unittest.mock import Mock
+
+    from gac_connect.client import GacClient
+    client = GacClient("TH", Mock())
+    client.command = AsyncMock()
+    with pytest.raises(ValueError):
+        asyncio.run(client.set_seat_ventilation_level("VIN", seat, level))
+    client.command.assert_not_awaited()
