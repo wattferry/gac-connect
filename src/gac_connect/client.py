@@ -56,6 +56,7 @@ from .const import (
     ERR_TOKEN_INVALID,
     HTTP_TIMEOUT,
     IOV_APP_ID,
+    IOV_PIN_CHECK,
     IOV_POLL_RESULT,
     IOV_VERSION,
     MAIN_APP_ID,
@@ -727,6 +728,11 @@ class GacClient:
         # Push results and polled ones read alike.
         from .push import interpret, normalize_id
 
+        if not isinstance(vin, str) or not vin.strip():
+            raise ValueError("vin must be a non-empty string")
+        if not isinstance(session_id, str) or not session_id.strip():
+            raise ValueError("session_id must be a non-empty string")
+
         resp = await self._iov_read(IOV_POLL_RESULT, {"identifier": {"sessionId": session_id, "vin": vin}},
                                     sensitive={"vin": vin})
         _LOGGER.debug("command result poll: %s", _excerpt(resp, 4000).replace(vin, "<VIN>"))
@@ -736,6 +742,31 @@ class GacClient:
         result = interpret(resp if isinstance(resp, dict) else {})
         return dataclasses.replace(result, session_id=result.session_id or normalize_id(session_id),
                                    vin=result.vin or vin)
+
+    async def verify_pin(self, pin: str) -> None:
+        """Verify the remote-control PIN without logging or retaining it.
+
+        The current GAC app performs this separate check before a protected
+        command; no PIN token was observed, so this does not put the PIN or a
+        fabricated token in the command body. Token expiry uses the normal read
+        refresh-and-retry path. Returns on success and raises
+        :class:`PinRequiredError` when the backend rejects the PIN.
+        """
+        if not isinstance(pin, str) or not pin.strip():
+            raise ValueError("pin must be a non-empty string")
+        resp = await self._iov_read(IOV_PIN_CHECK, {"pin": pin})
+        if not isinstance(resp, dict):
+            raise ResponseError("PIN verification response must be an object")
+        code = _safe_result_code(resp.get("code"))
+        success_code = code in SUCCESS_RESULT_CODES if code is not None else False
+        if resp.get("success") is True or (success_code and resp.get("success") is not False):
+            return
+        # An explicit refusal or a bounded result code is a genuine verification
+        # failure. Arbitrary response text is deliberately not surfaced.
+        if resp.get("success") is False or code is not None:
+            reason = result_reason(code) or "PIN verification was rejected"
+            raise PinRequiredError(reason, code=code)
+        raise ResponseError("PIN verification response has no recognized result")
 
     # ---- push channel ----------------------------------------------------
     async def mqtt_info(self) -> dict:
@@ -756,7 +787,7 @@ class GacClient:
         if cmd is None:
             raise CommandError(f"unknown command {name!r}")
         if cmd.pin:
-            raise PinRequiredError(f"{name} needs the remote-control PIN, not yet supported")
+            raise PinRequiredError(f"{name} needs a PIN through its dedicated method")
         if name == "vehicle-power-off" and overrides:
             raise CommandError("vehicle shutdown accepts no parameters")
         body = commands.build_body(cmd, vin, overrides)
@@ -873,6 +904,31 @@ class GacClient:
     async def unlock(self, vin: str) -> Any:
         """Unlock the doors without a PIN; send once and validate acceptance."""
         return await self.command(vin, "unlock")
+
+    async def unlock_charger(self, vin: str, pin: str) -> Any:
+        """Verify ``pin`` and submit one charger-unlock command."""
+        return await self._pin_command(vin, pin, "charger-unlock")
+
+    async def power_on(self, vin: str, pin: str) -> Any:
+        """Verify ``pin`` and submit one remote-power-on command."""
+        return await self._pin_command(vin, pin, "power-on")
+
+    async def power_off(self, vin: str, pin: str) -> Any:
+        """Verify ``pin`` and stop power previously started remotely.
+
+        This uses the app's ``engine/stop`` control. It is distinct from the
+        PIN-free ``vehicle-power-off`` shutdown command in the generic catalog.
+        """
+        return await self._pin_command(vin, pin, "power-off")
+
+    async def _pin_command(self, vin: str, pin: str, name: str) -> Any:
+        """Verify the PIN, then submit one fixed catalog command without retrying it."""
+        if not isinstance(vin, str) or not vin.strip():
+            raise ValueError("vin must be a non-empty string")
+        await self.verify_pin(pin)
+        cmd = commands.CATALOG[name]
+        body = commands.build_body(cmd, vin, {})
+        return await self._dispatch_command(cmd.path, body, vin)
 
     async def charge_now(self, vin: str, *, until_soc: bool = False) -> Any:
         """Allow charging whenever plugged in; the car keeps its saved window for a later resume.

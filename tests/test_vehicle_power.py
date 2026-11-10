@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from gac_connect.capabilities import Capabilities, Support
-from gac_connect.errors import CommandError
+from gac_connect.errors import CommandError, PinRequiredError
 from gac_connect.models import VehicleStatus
 from test_failures import Response, make_client
 
@@ -83,5 +83,41 @@ def test_shutdown_rejects_parameters_before_any_request():
     client._iov_call = AsyncMock()
     with pytest.raises(CommandError, match="no parameters"):
         asyncio.run(client.command("VIN", "vehicle-power-off", duration=30))
+    client._iov_call.assert_not_awaited()
+    http.post.assert_not_called()
+
+
+@pytest.mark.parametrize("method,name,path", [
+    ("power_on", "power-on", "engine/start"),
+    ("power_off", "power-off", "engine/stop"),
+])
+def test_pin_power_methods_verify_then_submit_the_app_command_once(method, name, path):
+    from gac_connect.commands import CATALOG
+
+    client, _, _ = make_client(Response(), valid=True)
+    client.verify_pin = AsyncMock(return_value=None)
+    client._iov_call = AsyncMock(return_value={"code": 13001, "data": {"sessionId": name}})
+
+    async def run():
+        await client.load()
+        return await getattr(client, method)("VIN", "246810")
+
+    assert asyncio.run(run())["data"]["sessionId"] == name
+    client.verify_pin.assert_awaited_once_with("246810")
+    client._iov_call.assert_awaited_once_with(
+        CATALOG[name].path, {"vin": "VIN"}, sensitive={"vin": "VIN"}, kind="command",
+    )
+    assert CATALOG[name].path.endswith("/access_gateway/" + path)
+
+
+@pytest.mark.parametrize("method", ["power_on", "power_off"])
+def test_rejected_pin_never_sends_a_power_command(method):
+    client, http, _ = make_client(Response(), valid=True)
+    client.verify_pin = AsyncMock(side_effect=PinRequiredError("incorrect PIN", code="11018"))
+    client._iov_call = AsyncMock()
+
+    with pytest.raises(PinRequiredError):
+        asyncio.run(getattr(client, method)("VIN", "246810"))
+
     client._iov_call.assert_not_awaited()
     http.post.assert_not_called()

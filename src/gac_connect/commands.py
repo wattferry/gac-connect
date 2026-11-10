@@ -11,8 +11,8 @@ are best-effort and may not apply to every model). The body shapes:
 * ``air-adjust``     → ``ops`` with identifier ``grade=2``, without starting a timed run
 * ``flat-ops``       → ``{"vin": …, "operations": [{…ops, **overrides}]}``
 
-PIN-gated commands are listed for completeness but the client refuses them until
-PIN support lands.
+PIN-gated commands are listed for completeness. The client exposes PIN support
+only through narrowly scoped methods; generic protected controls remain blocked.
 """
 from __future__ import annotations
 
@@ -91,9 +91,8 @@ CATALOG: dict[str, Command] = {c.name: c for c in [
     Command("horn-off", _p("horn/off"), "flat", category="body", description="horn off"),
     # charging & power
     Command("charge-schedule", _p("charging/reservation"), "ops", stable=True, category="charge", description="set charge schedule"),
-    # Sent like door unlock: only the VIN, no PIN.
-    Command("charger-unlock", _p("charger/unlock"), "flat", category="charge",
-            description="unlock the charging connector (no PIN required)"),
+    Command("charger-unlock", _p("charger/unlock"), "flat", pin=True, category="charge",
+            description="unlock the charging connector (PIN)"),
     Command("battery-precondition", _p("battery/pretreatment"), "ops", category="charge",
             description="battery preconditioning", ops={"batteryPretreatmentMode": 1}),
     # The app's pretreatment modes: 0 cancel, 1 immediately, 2 once, 3 loop. An Aion UT

@@ -9,6 +9,7 @@ from typing import Final
 IOV_PREFIX: Final = "/iov-vehicle-gateway/v1/platform/vehicle/access_gateway"
 # Reads a command's result without the push feed; note /iov/, not /platform/.
 IOV_POLL_RESULT: Final = "/iov-vehicle-gateway/v1/iov/vehicle/access_gateway/poll_access_response"
+IOV_PIN_CHECK: Final = "/pin/check/v2"
 
 # Both hosts are built from a per-country prefix, so the table holds prefixes
 # instead of repeating two long names 56 times. Each country has a main API prefix

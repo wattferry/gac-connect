@@ -104,7 +104,7 @@ class CommandError(GacError):
 
 
 class PinRequiredError(CommandError):
-    """This command needs the remote-control PIN, which is not yet supported."""
+    """A remote-control PIN was missing or rejected."""
 
 
 class RegionError(GacError):
