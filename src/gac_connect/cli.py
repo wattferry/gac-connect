@@ -1,4 +1,4 @@
-"""Command-line interface: ``gac login | status | vehicles | charge | command``.
+"""Command-line interface: ``gac login | status | vehicles | charge | charger``.
 
 Installed with the ``[cli]`` extra. Stores its session in
 ``~/.config/gac-connect/session.json`` (0600). The block puzzle opens in a local
@@ -9,7 +9,11 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+import time
 import webbrowser
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from enum import StrEnum
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -20,10 +24,12 @@ except ModuleNotFoundError as exc:  # pragma: no cover
 
 import aiohttp
 
-from . import puzzle
-from .client import GacClient
-from .puzzle import PuzzleSession
-from .session import FileStore
+from gac_connect import puzzle
+from gac_connect.client import GacClient, command_session_id
+from gac_connect.errors import PinRequiredError
+from gac_connect.push import PushResult
+from gac_connect.puzzle import PuzzleSession
+from gac_connect.session import FileStore
 
 app = typer.Typer(add_completion=False, help="Unofficial GAC / Aion client.")
 SESSION = Path.home() / ".config" / "gac-connect" / "session.json"
@@ -75,6 +81,106 @@ def _client(http: aiohttp.ClientSession, region: str, timezone: str | None = Non
     return GacClient(region, http, FileStore(SESSION), timezone=timezone)
 
 
+class _CommandState(StrEnum):
+    ACCEPTED = "accepted"
+    PENDING = "pending"
+    SUCCESS = "success"
+    FAILURE = "failure"
+    TIMEOUT = "timeout"
+
+
+@dataclass(frozen=True)
+class _CommandOutcome:
+    state: _CommandState
+    session_id: str | None = None
+    result: PushResult | None = None
+
+
+async def _wait_for_command(client: GacClient, vin: str, acknowledgement: object, *,
+                            timeout: float, poll_interval: float) -> _CommandOutcome:
+    """CLI-only bounded polling; command submission remains a separate library operation."""
+    session_id = command_session_id(acknowledgement)
+    if session_id is None or timeout == 0:
+        return _CommandOutcome(_CommandState.PENDING, session_id)
+    deadline = time.monotonic() + timeout
+    latest = None
+    while True:
+        latest = await client.poll_command_result(vin, session_id)
+        if latest is not None and latest.ok is not None:
+            state = _CommandState.SUCCESS if latest.ok else _CommandState.FAILURE
+            return _CommandOutcome(state, session_id, latest)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return _CommandOutcome(_CommandState.TIMEOUT, session_id, latest)
+        await asyncio.sleep(min(poll_interval, remaining))
+
+
+_PinCommand = Callable[[GacClient], Callable[[str, str], Awaitable[object]]]
+
+
+async def _execute_pin_command(
+    client: GacClient,
+    vin: str,
+    pin: str,
+    submit: _PinCommand,
+    *,
+    timeout: float | None,
+    poll_interval: float,
+) -> _CommandOutcome:
+    acknowledgement = await submit(client)(vin, pin)
+    if timeout is None:
+        return _CommandOutcome(_CommandState.ACCEPTED, command_session_id(acknowledgement))
+    return await _wait_for_command(
+        client, vin, acknowledgement, timeout=timeout, poll_interval=poll_interval,
+    )
+
+
+def _report_pin_command(label: str, outcome: _CommandOutcome, accepted_note: str = "") -> None:
+    suffix = f" (session {outcome.session_id})" if outcome.session_id else ""
+    if outcome.state is _CommandState.ACCEPTED:
+        typer.echo(f"{label}: accepted{suffix}{accepted_note}")
+        return
+    if outcome.state is _CommandState.SUCCESS:
+        typer.echo(f"{label}: success{suffix}")
+        return
+    if outcome.state is _CommandState.FAILURE:
+        code = outcome.result.code if outcome.result else None
+        reason = outcome.result.reason if outcome.result else None
+        detail = f": {reason}" if reason else (f" (code {code})" if code else "")
+        typer.echo(f"{label}: failed{suffix}{detail}", err=True)
+        raise typer.Exit(1)
+    typer.echo(f"{label}: {outcome.state.value}{suffix}; physical outcome unknown", err=True)
+    raise typer.Exit(2)
+
+
+def _run_pin_command(
+    vin: str,
+    pin: str,
+    region: str,
+    label: str,
+    submit: _PinCommand,
+    *,
+    timeout: float | None = None,
+    poll_interval: float = 5.0,
+    accepted_note: str = "",
+) -> None:
+    async def go() -> None:
+        async with aiohttp.ClientSession() as http:
+            client = _client(http, region)
+            await client.load()
+            try:
+                outcome = await _execute_pin_command(
+                    client, vin, pin, submit, timeout=timeout, poll_interval=poll_interval,
+                )
+            except PinRequiredError as exc:
+                suffix = f" (code {exc.code})" if exc.code else ""
+                typer.echo(f"{label}: PIN rejected{suffix}", err=True)
+                raise typer.Exit(1) from None
+            _report_pin_command(label, outcome, accepted_note)
+
+    asyncio.run(go())
+
+
 @app.command()
 def login(mobile: str = typer.Option(..., prompt=True), region: str = "AU") -> None:
     """Sign in with your mobile number and an SMS code."""
@@ -95,6 +201,20 @@ def login(mobile: str = typer.Option(..., prompt=True), region: str = "AU") -> N
             await client.login_sms(mobile, code)
             typer.echo("Signed in.")
     asyncio.run(go())
+
+
+@app.command("power-on")
+def vehicle_power_on(vin: str, region: str = "AU") -> None:
+    """Verify the remote-control PIN and submit one remote power-on command."""
+    pin = typer.prompt("Remote-control PIN", hide_input=True)
+    _run_pin_command(vin, pin, region, "vehicle power-on", lambda client: client.power_on)
+
+
+@app.command("power-off")
+def vehicle_power_off(vin: str, region: str = "AU") -> None:
+    """Verify the PIN and stop power previously started remotely."""
+    pin = typer.prompt("Remote-control PIN", hide_input=True)
+    _run_pin_command(vin, pin, region, "vehicle power-off", lambda client: client.power_off)
 
 
 @app.command()
@@ -138,6 +258,28 @@ def charge(vin: str, action: str, region: str = "AU", timezone: str = "") -> Non
             await client.charge_now(vin)
             typer.echo(f"charge {action}: accepted")
     asyncio.run(go())
+
+
+@app.command("charger-unlock")
+def charger_unlock(
+    vin: str,
+    region: str = "AU",
+    wait: bool = typer.Option(True, "--wait/--no-wait", help="Wait for the vehicle's result."),
+    timeout: float = typer.Option(45.0, min=0.0, help="Maximum seconds to wait."),
+    poll_interval: float = typer.Option(5.0, min=0.1, help="Seconds between result polls."),
+) -> None:
+    """Verify the remote-control PIN and unlock the charging connector once."""
+    pin = typer.prompt("Remote-control PIN", hide_input=True)
+    _run_pin_command(
+        vin,
+        pin,
+        region,
+        "charger unlock",
+        lambda client: client.unlock_charger,
+        timeout=timeout if wait else None,
+        poll_interval=poll_interval,
+        accepted_note="; result not awaited" if not wait else "",
+    )
 
 
 if __name__ == "__main__":

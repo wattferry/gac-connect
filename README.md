@@ -64,6 +64,9 @@ gac login --mobile 04xxxxxxxx --region AU   # opens the puzzle in a browser, the
 gac vehicles
 gac status <VIN>
 gac charge <VIN> now [--timezone Australia/Sydney]
+gac charger-unlock <VIN> [--no-wait] [--timeout 45] [--poll-interval 5]
+gac power-on <VIN>
+gac power-off <VIN>
 ```
 
 The session is kept in `~/.config/gac-connect/session.json`.
@@ -127,6 +130,13 @@ wrong slide. The CLI and the Home Assistant integration both use it.
 | `lock(vin)` | Lock the doors. |
 | `unlock(vin)` | Unlock the doors (no PIN). |
 
+**Power**
+
+| Method | Description |
+|---|---|
+| `power_on(vin, pin)` | Verify the remote-control PIN, then submit one remote power-on command. |
+| `power_off(vin, pin)` | Verify the remote-control PIN, then stop power previously started remotely. This is distinct from `vehicle-power-off`. |
+
 **Charging**
 
 | Method | Description |
@@ -135,6 +145,7 @@ wrong slide. The CLI and the Home Assistant integration both use it.
 | `restart_charging(vin)` | Start a new charge once one has ended (`restart_needed(status)`): a one-time window to the charge limit from the next minute. Send `charge_now` once charging has begun to keep it going. Replaces the saved window. |
 | `set_charge_window(vin, start, stop, *, weekly=0, until_soc=False)` | Charge between `start` and `stop` (`"HH:MM"`). `weekly`: Mon=1 … Sun=64, 127 every day, 0 once. A stop before the start runs overnight. |
 | `resume_schedule(vin, *, until_soc=None)` | Return to the charge window the car last reported. |
+| `unlock_charger(vin, pin)` | Verify the remote-control PIN, then submit one charging-connector unlock. |
 
 `until_soc=True` stops at the car's own target charge level instead of the stop
 time, like the app's "Charge cutoff SOC". No stop time is sent then (`stop` may be
@@ -163,8 +174,7 @@ in the request; invalid values raise `ValueError` before anything is sent.
 | `battery-precondition`, `battery-precondition-off` | Battery preconditioning. |
 | `vehicle-power-off` | Switch the car off (no overrides). |
 | `powerkeep-stop` | Stop power keep. |
-| `charger-unlock` | Unlock the charging connector so it can be pulled out. |
-| `power-on`, `power-off` | Need a PIN; raise `PinRequiredError`. |
+| `charger-unlock`, `power-on`, `power-off` | PIN-gated; generic dispatch raises `PinRequiredError`. Use `unlock_charger`, `power_on`, or `power_off`. |
 
 Commands return once the service accepts them; the car applies them shortly after.
 Use `command_session_id(response)` to match a response with its push result.
@@ -232,7 +242,7 @@ All derive from `GacError`.
 | `AccountSessionEnded` | GAC's account session has ended (the app signed in elsewhere); only account features such as the alert list need it. |
 | `CaptchaError`, `LoginError` | Sign-in failed. |
 | `CommandError` | The service refused a command; `code` and `reason` say why. |
-| `PinRequiredError` | The command needs a PIN. |
+| `PinRequiredError` | A required PIN was missing or rejected. |
 | `RateLimitedError` | A request limit was reached; `retry_after` in seconds. Nothing was sent. |
 | `RegionError` | Unknown region. |
 | `ResponseError` | Network failure, or a reply that was refused, could not be decrypted or was not as expected. |
