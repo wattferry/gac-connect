@@ -70,17 +70,23 @@ async def _run(coro):
     return await coro
 
 
-def _client(http: aiohttp.ClientSession, region: str, timezone: str | None = None) -> GacClient:
+def _client(http: aiohttp.ClientSession, region: str, timezone: str | None = None,
+            app_version: str | None = None) -> GacClient:
     # the shared limiter keeps its state between runs, so a loop around the CLI is limited too
-    return GacClient(region, http, FileStore(SESSION), timezone=timezone)
+    return GacClient(region, http, FileStore(SESSION), timezone=timezone, app_version=app_version)
 
 
 @app.command()
-def login(mobile: str = typer.Option(..., prompt=True), region: str = "AU") -> None:
+def login(mobile: str = typer.Option(..., prompt=True), region: str = "AU",
+          app_version: str = typer.Option(
+              "", "--app-version",
+              help="the client version to advertise; GAC refuses code sends from a version "
+                   "it considers old. Set it to your app's version (Settings, or the store page) "
+                   "if sign-in is refused with 1004002015.")) -> None:
     """Sign in with your mobile number and an SMS code."""
     async def go() -> None:
         async with aiohttp.ClientSession() as http:
-            client = _client(http, region)
+            client = _client(http, region, app_version=app_version or None)
             session = PuzzleSession(client, mobile, await client.start_captcha())
             pz = _PuzzlePage(session, asyncio.get_running_loop())
             webbrowser.open(pz.url)

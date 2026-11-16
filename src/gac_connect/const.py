@@ -124,7 +124,15 @@ REGIONS: Final[dict[str, dict[str, str]]] = {
 DEFAULT_REGION: Final = "AU"
 
 # Header identity the gateway expects (Android client profile).
-APP_VERSION: Final = "2.0.25"
+# The version string is not one of the signed headers (see signing.MAIN_FIELDS), so
+# the gateway reads it in the clear and gates code sends on it: a send advertising an
+# older release was refused with 1004002015 ("... please try again later. (1001)",
+# exSrcApp bff-aia-support) while a byte-identical send advertising the value below was
+# accepted and delivered the code. GAC moves this value when it ships a new release, so
+# it is a default only — GacClient(app_version=...) and ``gac login --app-version``
+# advertise whatever the account's own app reports, so an out-of-date default here no
+# longer blocks sign-in.
+APP_VERSION: Final = "2.0.33"
 MAIN_APP_ID: Final = "app-android"
 IOV_APP_ID: Final = "2"
 # IoV subsystem app id, per profile. GAC International runs the IoV subsystem

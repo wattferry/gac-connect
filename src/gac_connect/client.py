@@ -142,6 +142,7 @@ class GacClient:
         material: Material | None = None,
         limiter: Limiter | None = None,
         timezone: str | None = None,
+        app_version: str | None = None,
     ) -> None:
         if region not in REGIONS:
             raise RegionError(f"unknown region {region!r}; known: {', '.join(REGIONS)}")
@@ -150,6 +151,10 @@ class GacClient:
         # Charge windows are given in local clock time, so a country spanning several
         # zones (RU, BR, MX, ID, AU, ES, PT, CL) needs the car's own, not the table's.
         self.timezone = timezone or self._cfg["tz"]
+        # The gateway reads the advertised client version in the clear (it is not
+        # signed) and refuses code sends from a version it considers old, so a caller
+        # who knows their app's version can state it instead of trusting the default.
+        self.app_version = app_version or APP_VERSION
         self._tz: ZoneInfo | None = None
         if timezone is not None:
             self._zone()      # a zone the caller named is checked now, not at the first window
@@ -314,7 +319,7 @@ class GacClient:
         wrapper, _, _ = encrypt_envelope(body, self._m.main.public)
         headers = {
             "user-agent": USER_AGENT, "fnc-app-type": "android", "locale": "en",
-            "fnc-fnc-os-version-type": APP_VERSION, "fnc-app-id": MAIN_APP_ID,
+            "fnc-fnc-os-version-type": self.app_version, "fnc-app-id": MAIN_APP_ID,
             "fnc-timestamp": _now_ms(), "region": self.region,
             "fnc-client-timezone": self.timezone, "fnc-requestId": _request_id(),
             "content-type": "application/json; charset=utf-8",
@@ -334,7 +339,7 @@ class GacClient:
         )
         headers = {
             "user-agent": USER_AGENT, "fnc-app-type": "android", "locale": "en",
-            "fnc-fnc-os-version-type": APP_VERSION, "fnc-request-id": _request_id(),
+            "fnc-fnc-os-version-type": self.app_version, "fnc-request-id": _request_id(),
             "content-type": "application/json; charset=utf-8", "fnc-version": IOV_VERSION,
             "fnc-app-id": self._iov_app_id, "fnc-timestamp": _now_ms(),
             "fnc-icv-timezone": self.timezone,

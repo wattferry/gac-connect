@@ -72,11 +72,14 @@ The session is kept in `~/.config/gac-connect/session.json`.
 
 ### GacClient
 
-`GacClient(region, http, store=None, *, material=None, limiter=None, timezone=None)`
+`GacClient(region, http, store=None, *, material=None, limiter=None, timezone=None,
+app_version=None)`
 
 - `region`: ISO country code (see [Regions](#regions)).
 - `http`: an `aiohttp.ClientSession`.
 - `timezone`: IANA zone for charge windows; defaults to the region's zone.
+- `app_version`: the client version to advertise; defaults to `const.APP_VERSION`
+  (see [Client version](#client-version)).
 
 All methods are coroutines unless noted. `vin` is the vehicle's VIN.
 
@@ -260,6 +263,27 @@ calling code and time zone.
 - `GB` uses the My AION app's own service and keys.
 - Countries that span several time zones (for example AU, BR, MX, RU) use one
   default zone; pass `timezone=` for the car's own.
+
+## Client version
+
+Every request advertises a client version in the `fnc-fnc-os-version-type` header.
+It is not one of the signed headers (`signing.MAIN_FIELDS`), so the gateway reads it
+in the clear and gates on it: a code send advertising a version it considers old is
+refused with `1004002015` and "Verification code sending failed. Please try again
+later. (1001)" from the messaging service (`bff-aia-support`), after the puzzle check
+has already passed. The wording reads like a temporary cap on sends, and waiting does
+not help; the same request advertising a version GAC currently accepts is served and
+delivers the code.
+
+`const.APP_VERSION` is only a default, and GAC moves this value when it ships a new
+release, so an out-of-date default should not block sign-in:
+
+- `GacClient(..., app_version="...")` advertises that version on both the account API
+  and the IoV gateway;
+- `gac login --mobile ... --app-version ...` does the same from the CLI.
+
+Set it to the version the account's own app reports (its settings screen, or the store
+page listing the app's version).
 
 ## Request limits
 
